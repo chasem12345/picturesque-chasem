@@ -7,14 +7,19 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
-use picturesque_core::birds::{Classifier, Rect, Species, crop_square, labels_from_rows};
+use picturesque_core::birds::{
+    Classifier, DETECT_SIZE, Rect, Species, crop_square, decode_detections, detector_input,
+    labels_from_rows,
+};
 use picturesque_core::clip::{Embedding, INPUT_SIZE, preprocess};
 use picturesque_core::photo::PhotoId;
+use picturesque_core::pixels::RgbImage;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::models::{
-    BIRDS, BIRDS_CLASSIFIER_FILE, BIRDS_LABELS_FILE, BIRDS_MODEL_FILE, LoadedModel, ModelService,
+    BIRD_DETECTOR, BIRD_DETECTOR_FILE, BIRDS, BIRDS_CLASSIFIER_FILE, BIRDS_LABELS_FILE,
+    BIRDS_MODEL_FILE, LoadedModel, ModelService,
 };
 use crate::ports::birds::SpeciesLists;
 use crate::ports::catalog::{CatalogError, PhotoCatalog};
@@ -29,9 +34,16 @@ const SUGGESTIONS: usize = 5;
 /// Longest edge of the image the box is cut from: enough detail for a
 /// small bird in a large frame.
 const SOURCE_EDGE: u32 = 4096;
+/// COCO's "bird" among the detector's 80 classes.
+const COCO_BIRD: usize = 14;
+const COCO_CLASSES: usize = 80;
+/// How sure the detector must be that a box holds a bird.
+const DETECT_THRESHOLD: f32 = 0.4;
+/// Most birds found in one photo.
+const MAX_BIRDS: usize = 20;
 
 /// A box in the photo as shown (upright), as shares of its size.
-#[derive(Debug, Clone, Copy, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct BoxView {
@@ -39,6 +51,28 @@ pub struct BoxView {
     pub y: f32,
     pub width: f32,
     pub height: f32,
+}
+
+impl From<BoxView> for Rect {
+    fn from(b: BoxView) -> Self {
+        Self {
+            x: b.x,
+            y: b.y,
+            width: b.width,
+            height: b.height,
+        }
+    }
+}
+
+impl From<Rect> for BoxView {
+    fn from(r: Rect) -> Self {
+        Self {
+            x: r.x,
+            y: r.y,
+            width: r.width,
+            height: r.height,
+        }
+    }
 }
 
 /// Arguments of `identify_bird`.
@@ -105,6 +139,39 @@ pub struct BirdIdResult {
     pub elsewhere: Option<SpeciesView>,
 }
 
+/// A bird `find_birds` found, with its suggestions.
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+#[ts(export)]
+pub struct FoundBird {
+    #[serde(rename = "box")]
+    pub area: BoxView,
+    /// How sure the detector is that it is a bird, 0–1.
+    pub score: f32,
+    /// Most likely species first.
+    pub suggestions: Vec<SuggestionView>,
+    /// The best match outside the region, as in [`BirdIdResult`].
+    pub elsewhere: Option<SpeciesView>,
+}
+
+/// What `find_birds` found.
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+#[ts(export)]
+pub struct FoundBirds {
+    /// Left to right.
+    pub birds: Vec<FoundBird>,
+    /// The region the suggestions were limited to, if any.
+    pub region: Option<String>,
+}
+
+/// Arguments of `find_birds`.
+#[derive(Debug, Clone, Copy, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+#[ts(export)]
+pub struct FindBirdsArgs {
+    #[ts(type = "number")]
+    pub photo_id: i64,
+}
+
 /// Arguments of `set_photo_species`.
 #[derive(Debug, Clone, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
@@ -112,8 +179,8 @@ pub struct BirdIdResult {
 pub struct SetSpeciesArgs {
     #[ts(type = "number")]
     pub photo_id: i64,
-    /// `null` forgets the species.
-    pub species: Option<SpeciesView>,
+    /// Every species on the photo, in the order chosen; empty forgets them.
+    pub species: Vec<SpeciesView>,
 }
 
 /// Arguments of `photo_species`.
@@ -131,7 +198,8 @@ pub struct PhotoSpeciesArgs {
 pub struct PhotoSpeciesView {
     #[ts(type = "number")]
     pub photo_id: i64,
-    pub species: SpeciesView,
+    /// In the order chosen.
+    pub species: Vec<SpeciesView>,
 }
 
 /// What `refresh_bird_region` fetched.
@@ -181,6 +249,7 @@ struct Known {
 /// Identifies birds and keeps the species chosen for photos.
 pub struct BirdService {
     model: LoadedModel,
+    detector: LoadedModel,
     models: Arc<ModelService>,
     thumbnails: Arc<ThumbnailService>,
     pixels: Arc<dyn PixelLoader>,
@@ -218,10 +287,17 @@ impl BirdService {
         Self {
             model: LoadedModel::new(
                 Arc::clone(&deps.models),
-                deps.engine,
+                Arc::clone(&deps.engine),
                 Arc::clone(&deps.settings),
                 BIRDS,
                 BIRDS_MODEL_FILE,
+            ),
+            detector: LoadedModel::new(
+                Arc::clone(&deps.models),
+                deps.engine,
+                Arc::clone(&deps.settings),
+                BIRD_DETECTOR,
+                BIRD_DETECTOR_FILE,
             ),
             models: deps.models,
             thumbnails: deps.thumbnails,
@@ -272,15 +348,19 @@ impl BirdService {
         Ok(species)
     }
 
-    /// The most likely species of the bird in `area` of the photo.
-    pub fn identify(&self, id: PhotoId, area: BoxView) -> Result<BirdIdResult, BirdError> {
+    /// Checks the species identifier can run.
+    fn ready(&self) -> Result<Arc<Known>, BirdError> {
         if let Some(why) = self.model.unavailable() {
             return Err(BirdError::NotReady(why));
         }
         if !self.model.available() {
             return Err(Self::not_ready());
         }
-        let species = self.species()?;
+        self.species()
+    }
+
+    /// The photo as shown (upright), longest edge at most [`SOURCE_EDGE`].
+    fn load(&self, id: PhotoId) -> Result<RgbImage, BirdError> {
         let view = self
             .thumbnails
             .pair_view()
@@ -289,16 +369,34 @@ impl BirdService {
             .thumbnails
             .image(id, ImageSize::Full, view)
             .map_err(|e| BirdError::Failed(e.to_string()))?;
-        let image = self
-            .pixels
+        self.pixels
             .load(&path, SOURCE_EDGE)
-            .map_err(|e| BirdError::Failed(format!("Cannot read the photo: {e}")))?;
-        let rect = Rect {
-            x: area.x,
-            y: area.y,
-            width: area.width,
-            height: area.height,
-        };
+            .map_err(|e| BirdError::Failed(format!("Cannot read the photo: {e}")))
+    }
+
+    /// The species of the region set now (classifier rows), if any.
+    fn region(&self, known: &Known) -> Result<Option<(HashSet<usize>, String)>, BirdError> {
+        let settings = self.settings.load_settings()?;
+        let allowed: Option<HashSet<usize>> = settings.region_species().map(|codes| {
+            codes
+                .iter()
+                .filter_map(|c| known.by_code.get(c).copied())
+                .collect()
+        });
+        Ok(allowed
+            .filter(|a| !a.is_empty())
+            .map(|a| (a, settings.bird_id.region.clone())))
+    }
+
+    /// Ranks species for the bird in `rect` of `image`: (suggestions,
+    /// best match outside the region).
+    fn classify(
+        &self,
+        image: &RgbImage,
+        rect: Rect,
+        known: &Known,
+        allowed: Option<&HashSet<usize>>,
+    ) -> Result<(Vec<SuggestionView>, Option<SpeciesView>), BirdError> {
         let (x, y, side) = crop_square(rect, image.width(), image.height())
             .ok_or_else(|| BirdError::Invalid("Draw a box around the bird first.".into()))?;
         let crop = image.crop(x, y, side, side);
@@ -318,37 +416,89 @@ impl BirdService {
             .and_then(Tensor::as_f32)
             .and_then(Embedding::new)
             .ok_or_else(|| BirdError::Failed("the bird identifier returned nothing".into()))?;
-
-        let settings = self.settings.load_settings()?;
-        let allowed: Option<HashSet<usize>> = settings.region_species().map(|codes| {
-            codes
-                .iter()
-                .filter_map(|c| species.by_code.get(c).copied())
-                .collect()
-        });
-        let allowed = allowed.filter(|a| !a.is_empty());
-        let view = |i: usize| SpeciesView::from(&species.labels[i]);
-        let suggestions = species
+        let view = |i: usize| SpeciesView::from(&known.labels[i]);
+        let suggestions = known
             .classifier
-            .rank(&embedding, SUGGESTIONS, allowed.as_ref())
+            .rank(&embedding, SUGGESTIONS, allowed)
             .into_iter()
             .map(|c| SuggestionView {
                 species: view(c.index),
                 confidence: c.confidence,
             })
             .collect();
-        let elsewhere = allowed.as_ref().and_then(|allowed| {
-            let best = species
+        let elsewhere = allowed.and_then(|allowed| {
+            let best = known
                 .classifier
                 .rank(&embedding, 1, None)
                 .into_iter()
                 .next()?;
             (!allowed.contains(&best.index)).then(|| view(best.index))
         });
+        Ok((suggestions, elsewhere))
+    }
+
+    /// The most likely species of the bird in `area` of the photo.
+    pub fn identify(&self, id: PhotoId, area: BoxView) -> Result<BirdIdResult, BirdError> {
+        let known = self.ready()?;
+        let image = self.load(id)?;
+        let region = self.region(&known)?;
+        let (suggestions, elsewhere) =
+            self.classify(&image, area.into(), &known, region.as_ref().map(|r| &r.0))?;
         Ok(BirdIdResult {
             suggestions,
-            region: allowed.map(|_| settings.bird_id.region.clone()),
+            region: region.map(|r| r.1),
             elsewhere,
+        })
+    }
+
+    /// Finds every bird in the photo and suggests each one's species.
+    pub fn find_birds(&self, id: PhotoId) -> Result<FoundBirds, BirdError> {
+        let known = self.ready()?;
+        if let Some(why) = self.detector.unavailable() {
+            return Err(BirdError::NotReady(why));
+        }
+        if !self.detector.available() {
+            return Err(BirdError::NotReady(
+                "Download the RT-DETR bird finder in Settings → AI models first.".into(),
+            ));
+        }
+        let image = self.load(id)?;
+        let size = DETECT_SIZE as usize;
+        let outputs = self
+            .detector
+            .get()
+            .map_err(BirdError::Failed)?
+            .run(vec![Tensor::f32(
+                "pixel_values",
+                &[1, 3, size, size],
+                detector_input(&image),
+            )])
+            .map_err(|e| BirdError::Failed(e.to_string()))?;
+        let (Some(logits), Some(boxes)) = (
+            outputs.first().and_then(Tensor::as_f32),
+            outputs.get(1).and_then(Tensor::as_f32),
+        ) else {
+            return Err(BirdError::Failed("the bird finder returned nothing".into()));
+        };
+        let mut found = decode_detections(logits, boxes, COCO_CLASSES, COCO_BIRD, DETECT_THRESHOLD);
+        found.truncate(MAX_BIRDS);
+        let region = self.region(&known)?;
+        let birds = found
+            .into_iter()
+            .map(|d| {
+                let (suggestions, elsewhere) =
+                    self.classify(&image, d.rect, &known, region.as_ref().map(|r| &r.0))?;
+                Ok(FoundBird {
+                    area: d.rect.into(),
+                    score: d.score,
+                    suggestions,
+                    elsewhere,
+                })
+            })
+            .collect::<Result<Vec<_>, BirdError>>()?;
+        Ok(FoundBirds {
+            birds,
+            region: region.map(|r| r.1),
         })
     }
 
@@ -395,14 +545,15 @@ impl BirdService {
         Ok(view)
     }
 
-    /// Keeps (or forgets) the species chosen for a photo.
-    pub fn set_species(&self, id: PhotoId, species: Option<SpeciesView>) -> Result<(), BirdError> {
-        let species = species.map(Species::from);
-        self.catalog.set_bird_species(id, species.as_ref())?;
+    /// Keeps the species chosen for a photo (replacing earlier ones; none
+    /// forgets them).
+    pub fn set_species(&self, id: PhotoId, species: Vec<SpeciesView>) -> Result<(), BirdError> {
+        let species: Vec<Species> = species.into_iter().map(Species::from).collect();
+        self.catalog.set_bird_species(id, &species)?;
         Ok(())
     }
 
-    /// The chosen species of those photos that have one.
+    /// The chosen species of those photos that have any.
     pub fn photo_species(&self, ids: &[PhotoId]) -> Result<Vec<PhotoSpeciesView>, BirdError> {
         Ok(self
             .catalog
@@ -410,7 +561,7 @@ impl BirdService {
             .iter()
             .map(|(id, s)| PhotoSpeciesView {
                 photo_id: id.0,
-                species: s.into(),
+                species: s.iter().map(SpeciesView::from).collect(),
             })
             .collect())
     }

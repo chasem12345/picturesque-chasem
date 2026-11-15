@@ -125,6 +125,74 @@ fn reads_wingclip_label_rows() {
     assert!(labels_from_rows(vec![vec!["only".into(), "two".into()]]).is_err());
 }
 
+/// A logit whose sigmoid is `p`.
+fn logit(p: f32) -> f32 {
+    (p / (1.0 - p)).ln()
+}
+
+#[test]
+fn decodes_birds_dropping_weak_and_duplicate_boxes_left_to_right() {
+    // Three classes; class 1 is "bird". Five queries.
+    let low = logit(0.01);
+    let logits = [
+        low,
+        logit(0.9),
+        low, // a bird on the right
+        low,
+        logit(0.8),
+        low, // a bird on the left
+        low,
+        logit(0.7),
+        low, // the right bird again, nearly the same box
+        low,
+        logit(0.2),
+        low, // too unsure
+        logit(0.95),
+        low,
+        low, // not a bird
+    ];
+    let boxes = [
+        0.75, 0.5, 0.2, 0.2, //
+        0.25, 0.5, 0.2, 0.3, //
+        0.76, 0.5, 0.2, 0.2, //
+        0.5, 0.5, 0.1, 0.1, //
+        0.5, 0.5, 0.5, 0.5,
+    ];
+
+    let found = decode_detections(&logits, &boxes, 3, 1, 0.5);
+
+    assert_eq!(found.len(), 2, "{found:?}");
+    assert!((found[0].rect.x - 0.15).abs() < 1e-5, "left first");
+    assert!((found[0].rect.height - 0.3).abs() < 1e-5);
+    assert!((found[0].score - 0.8).abs() < 1e-4);
+    assert!((found[1].rect.x - 0.65).abs() < 1e-5);
+    assert!(
+        (found[1].score - 0.9).abs() < 1e-4,
+        "the better duplicate stays"
+    );
+    assert!(decode_detections(&logits, &boxes, 3, 5, 0.5).is_empty());
+    assert!(decode_detections(&[], &[], 0, 0, 0.5).is_empty());
+}
+
+#[test]
+fn boxes_are_kept_inside_the_image() {
+    let found = decode_detections(&[logit(0.9)], &[0.05, 0.95, 0.2, 0.2], 1, 0, 0.5);
+    let r = &found[0].rect;
+    assert_eq!(r.x, 0.0);
+    assert!((r.y - 0.85).abs() < 1e-5);
+    assert!((r.width - 0.15).abs() < 1e-5 && (r.height - 0.15).abs() < 1e-5);
+}
+
+#[test]
+fn detector_input_is_a_640_square_of_shares() {
+    let input = detector_input(&crate::pixels::RgbImage::filled(1200, 800, [255, 0, 51]));
+    let plane = 640 * 640;
+    assert_eq!(input.len(), 3 * plane);
+    assert!((input[0] - 1.0).abs() < 1e-6);
+    assert!(input[plane].abs() < 1e-6);
+    assert!((input[2 * plane] - 0.2).abs() < 1e-6);
+}
+
 #[test]
 fn crops_a_square_around_the_box_with_some_margin() {
     let rect = |x, y, width, height| Rect {

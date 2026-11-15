@@ -4,4 +4,8 @@ import type { SpeciesView } from "./SpeciesView";
 /**
  * A photo's chosen species.
  */
-export type PhotoSpeciesView = { photo_id: number, species: SpeciesView, };
+export type PhotoSpeciesView = { photo_id: number, 
+/**
+ * In the order chosen.
+ */
+species: Array<SpeciesView>, };

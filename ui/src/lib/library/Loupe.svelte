@@ -3,8 +3,10 @@
   import Critique from "./Critique.svelte";
   import SeriesRibbon from "./SeriesRibbon.svelte";
   import UpcomingStacks from "./UpcomingStacks.svelte";
-  import BirdIdPanel from "./BirdIdPanel.svelte";
-  import { BirdNames } from "./birds.svelte";
+  import { untrack } from "svelte";
+  import BirdIdPanel, { type Bird } from "./BirdIdPanel.svelte";
+  import { BirdNames, names } from "./birds.svelte";
+  import ResizeHandle from "../components/ResizeHandle.svelte";
   import { SeriesStrip, stripPrefs } from "./series-strip.svelte";
   import { entryMember, step, type Entry } from "./stack-nav";
   import {
@@ -14,10 +16,10 @@
     critiquePhoto,
     getCritique,
     getPhoto,
+    findBirds,
     identifyBird,
     photoSpecies,
     setPhotoSpecies,
-    type BirdIdResult,
     type CriticStatus,
     type DecisionView,
     type SpeciesView,
@@ -164,6 +166,9 @@
     if (at >= 0) onnavigate(at);
   }
 
+  /** Width of the details pane, resizable. */
+  let infoWidth = $state(320);
+
   // ---- Bird ID ----
   const birdNames = new BirdNames({ photoSpecies, setPhotoSpecies });
   /** The Bird ID panel is open. */
@@ -171,9 +176,12 @@
   /** Waiting for a box to be drawn on the photo. */
   let drawing = $state(false);
   let birdBusy = $state(false);
-  let birdResult = $state<BirdIdResult | null>(null);
+  /** Birds found or boxed in the shown photo, and the one looked at. */
+  let birds = $state<Bird[]>([]);
+  let selectedBird = $state<number | null>(null);
+  let birdRegion = $state<string | null>(null);
   let birdError = $state<string | null>(null);
-  /** The box asked about, or being drawn: shares of the shown photo. */
+  /** The box being drawn: shares of the shown photo. */
   let birdBox = $state<{ x: number; y: number; w: number; h: number } | null>(
     null,
   );
@@ -200,32 +208,63 @@
     };
   }
 
-  function startDrawing() {
+  function openBird() {
     zoomed = false;
     birdOpen = true;
-    drawing = true;
     birdError = null;
-    birdResult = null;
-    birdBox = null;
     // After the fitted image is back in place.
     requestAnimationFrame(measure);
   }
 
+  function startDrawing() {
+    openBird();
+    drawing = true;
+    birdBox = null;
+  }
+
+  /** Finds every bird in the shown photo. */
+  async function findAll() {
+    const shown = photo;
+    if (!shown) return;
+    openBird();
+    drawing = false;
+    birdBusy = true;
+    try {
+      const found = await findBirds(shown.id);
+      if (photo?.id !== shown.id) return;
+      // Boxes drawn by hand stay.
+      birds = [
+        ...found.birds.map((b) => ({ ...b, score: b.score as number | null })),
+        ...birds.filter((b) => b.score === null),
+      ];
+      birdRegion = found.region;
+      selectedBird = birds.length > 0 ? 0 : null;
+      if (found.birds.length === 0)
+        birdError = "No bird found. Draw a box around one with D.";
+    } catch (e) {
+      if (photo?.id === shown.id) birdError = ApiError.from(e).message;
+    } finally {
+      birdBusy = false;
+    }
+  }
+
   function toggleBird() {
-    if (birdOpen) {
-      birdOpen = false;
+    if (birdOpen && drawing) {
       drawing = false;
+      if (birds.length === 0) birdOpen = false;
     } else startDrawing();
   }
 
   // Another photo: what was found was about the previous one.
   $effect(() => {
     void photo?.id;
-    birdResult = null;
+    birds = [];
+    selectedBird = null;
     birdError = null;
     birdBox = null;
-    drawing = birdOpen;
-    if (birdOpen) requestAnimationFrame(measure);
+    drawing = false;
+    // Only on a new photo: opening the panel must not reset it.
+    if (untrack(() => birdOpen)) requestAnimationFrame(measure);
   });
 
   /** Position (shares of the photo, 0–1) of a pointer event. */
@@ -266,16 +305,24 @@
       return;
     }
     drawing = false;
+    birdBox = null;
     birdBusy = true;
     birdError = null;
+    const area = { x: box.x, y: box.y, width: box.w, height: box.h };
     try {
-      const result = await identifyBird(shown.id, {
-        x: box.x,
-        y: box.y,
-        width: box.w,
-        height: box.h,
-      });
-      if (photo?.id === shown.id) birdResult = result;
+      const result = await identifyBird(shown.id, area);
+      if (photo?.id !== shown.id) return;
+      birds = [
+        ...birds,
+        {
+          box: area,
+          score: null,
+          suggestions: result.suggestions,
+          elsewhere: result.elsewhere,
+        },
+      ];
+      birdRegion = result.region;
+      selectedBird = birds.length - 1;
     } catch (e) {
       if (photo?.id === shown.id) birdError = ApiError.from(e).message;
     } finally {
@@ -283,11 +330,23 @@
     }
   }
 
-  async function useSpecies(species: SpeciesView | null, wholeStack: boolean) {
-    if (!photo) return;
-    const ids = wholeStack ? strip.members.map((p) => p.id) : [photo.id];
+  /** The photos a species choice applies to. */
+  function namedIds(wholeStack: boolean): number[] {
+    if (!photo) return [];
+    return wholeStack ? strip.members.map((p) => p.id) : [photo.id];
+  }
+
+  async function addSpecies(species: SpeciesView, wholeStack: boolean) {
     try {
-      await birdNames.set(ids, species);
+      await birdNames.add(namedIds(wholeStack), species);
+    } catch (e) {
+      birdError = ApiError.from(e).message;
+    }
+  }
+
+  async function removeSpecies(code: string, wholeStack: boolean) {
+    try {
+      await birdNames.remove(namedIds(wholeStack), code);
     } catch (e) {
       birdError = ApiError.from(e).message;
     }
@@ -298,13 +357,17 @@
     const ids = strip.members.map((p) => p.id);
     if (photo) ids.push(photo.id);
     if (stacked)
-      for (let i = index; i < Math.min(store.total, index + 21); i++) {
+      for (
+        let i = Math.max(0, index - 30);
+        i < Math.min(store.total, index + 31);
+        i++
+      ) {
         const p = store.photos[i];
         if (p) ids.push(p.id);
       }
     void birdNames.load(ids);
   });
-  const species = $derived(photo ? birdNames.of(photo.id) : null);
+  const species = $derived(photo ? birdNames.of(photo.id) : []);
 
   const UPNEXT_KEY = "picturesque.upNext";
   /** The stacks-up-next pane, shown while stacked. */
@@ -505,11 +568,13 @@
       N: () => (showUpNext = !showUpNext),
       d: toggleBird,
       D: toggleBird,
+      f: () => void findAll(),
+      F: () => void findAll(),
       Escape: () => {
         if (drawing) {
           drawing = false;
           birdBox = null;
-          if (!birdResult) birdOpen = false;
+          if (birds.length === 0) birdOpen = false;
         } else if (zoomed) zoomed = false;
         else if (birdOpen) birdOpen = false;
         else onclose();
@@ -552,7 +617,7 @@
       {store}
       {index}
       onselect={openEntry}
-      species={(p) => birdNames.of(p.id)?.common ?? null}
+      species={(p) => names(birdNames.of(p.id))}
     />
   {/if}
   <div
@@ -632,7 +697,7 @@
       </figure>
     {/if}
 
-    {#if birdOpen && !zoomed && imgBox && (drawing || birdBox)}
+    {#if birdOpen && !zoomed && imgBox && (drawing || birdBox || birds.length > 0)}
       <div
         class="boxer"
         class:drawing
@@ -646,6 +711,22 @@
         onpointerup={drawing ? () => void boxUp() : undefined}
         data-testid="bird-id-boxer"
       >
+        {#each birds as bird, i (i)}
+          <button
+            class="birdbox found"
+            class:selected={selectedBird === i}
+            style:left="{bird.box.x * 100}%"
+            style:top="{bird.box.y * 100}%"
+            style:width="{bird.box.width * 100}%"
+            style:height="{bird.box.height * 100}%"
+            onclick={(e) => {
+              e.currentTarget.blur();
+              selectedBird = i;
+            }}
+            title={bird.suggestions[0]?.species.common ?? "Bird"}
+            data-testid="bird-id-box"><span class="tag">{i + 1}</span></button
+          >
+        {/each}
         {#if birdBox}
           <div
             class="birdbox"
@@ -660,15 +741,19 @@
 
     {#if birdOpen}
       <BirdIdPanel
+        {birds}
+        selected={selectedBird}
+        onselect={(i) => (selectedBird = selectedBird === i ? null : i)}
         {drawing}
         busy={birdBusy}
-        result={birdResult}
         error={birdError}
+        region={birdRegion}
         current={species}
         stackSize={strip.members.length}
-        onuse={(s, whole) => void useSpecies(s, whole)}
-        onforget={() => void useSpecies(null, false)}
-        onredraw={startDrawing}
+        onadd={(s, whole) => void addSpecies(s, whole)}
+        onremove={(code, whole) => void removeSpecies(code, whole)}
+        onfind={() => void findAll()}
+        ondraw={startDrawing}
         onclose={() => {
           birdOpen = false;
           drawing = false;
@@ -717,9 +802,15 @@
         ><Icon name="information-circle" /> Info</button
       >
       <button
-        onclick={(e) => act(e, toggleBird)}
+        onclick={(e) =>
+          act(e, () => {
+            if (birdOpen) {
+              birdOpen = false;
+              drawing = false;
+            } else openBird();
+          })}
         aria-pressed={birdOpen}
-        title="Identify a bird: drag a box around it (D)"
+        title="Identify birds: find them all (F) or draw a box (D)"
         data-testid="loupe-bird-id"
         ><Icon name="viewfinder-circle" /> Bird ID</button
       >
@@ -822,14 +913,24 @@
   </div>
 
   {#if showInfo}
-    <aside class="info" data-testid="loupe-info">
+    <aside class="info" style:width="{infoWidth}px" data-testid="loupe-info">
+      <ResizeHandle
+        bind:width={infoWidth}
+        edge="left"
+        min={240}
+        max={640}
+        storageKey="picturesque.infoWidth"
+        label="Resize the details pane"
+      />
       {#if detail}
         <h2>{photo?.file_name}</h2>
         <dl>
-          {#if species}
-            <dt>Bird</dt>
+          {#if species.length > 0}
+            <dt>{species.length === 1 ? "Bird" : "Birds"}</dt>
             <dd data-testid="loupe-species">
-              {species.common} <em class="muted">{species.scientific}</em>
+              {#each species as s (s.code)}
+                <div>{s.common} <em class="muted">{s.scientific}</em></div>
+              {/each}
             </dd>
           {/if}
           {#if detail.captured_at}
@@ -974,8 +1075,9 @@
       <p class="keys muted">
         ← → move{stacked
           ? " through each stack · Shift+← → or Page Up/Down skip a stack · N up next"
-          : ""} · P or ↑ pick · X or ↓ reject · U unflag · 0–5 stars · D bird ID ·
-        Shift+key decides and moves on · Z zoom · I info{photo && isPair(photo)
+          : ""} · P or ↑ pick · X or ↓ reject · U unflag · 0–5 stars · F find birds
+        · D draw a box · Shift+key decides and moves on · Z zoom · I info{photo &&
+        isPair(photo)
           ? " · R RAW or JPEG"
           : ""} · Esc close
       </p>
@@ -1069,6 +1171,45 @@
     pointer-events: none;
   }
 
+  /* The container lets clicks through to the photo unless drawing; the
+     found birds' boxes take them. */
+  .boxer:not(.drawing) {
+    pointer-events: none;
+  }
+
+  .birdbox.found {
+    padding: 0;
+    background: transparent;
+    border-radius: 2px;
+    border-color: rgb(242 201 76 / 0.6);
+    pointer-events: auto;
+    cursor: pointer;
+  }
+
+  .boxer.drawing .birdbox.found {
+    pointer-events: none;
+  }
+
+  .birdbox.found.selected {
+    border-color: #f2c94c;
+    border-width: 3px;
+  }
+
+  .tag {
+    position: absolute;
+    left: -2px;
+    top: -1.4rem;
+    min-width: 1.2rem;
+    padding: 0 0.3rem;
+    border-radius: 4px 4px 0 0;
+    background: #f2c94c;
+    color: #0d0d0c;
+    font-size: 0.75rem;
+    font-weight: 700;
+    line-height: 1.4rem;
+    text-align: center;
+  }
+
   .scroller {
     position: absolute;
     inset: 0;
@@ -1106,11 +1247,15 @@
     left: 50%;
     transform: translateX(-50%);
     display: flex;
+    /* Narrowed by the side panes, it wraps rather than overflowing. */
+    flex-wrap: wrap;
+    justify-content: center;
     align-items: center;
     gap: 0.4rem;
     padding: 0.35rem 0.5rem;
     width: max-content;
     max-width: calc(100% - 2rem);
+    box-sizing: border-box;
     white-space: nowrap;
     background: rgb(30 30 28 / 0.85);
     border-radius: 10px;
@@ -1213,7 +1358,7 @@
   }
 
   .info {
-    width: 20rem;
+    position: relative;
     flex-shrink: 0;
     padding: 1.2rem;
     background: #171716;

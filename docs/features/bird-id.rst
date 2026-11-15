@@ -17,23 +17,32 @@ Setting up
    region. Without a region, every one of the model's 11,167 species can be
    suggested.
 
-Identifying a bird
-------------------
+Identifying birds
+-----------------
 
-In the full-screen view, press :kbd:`D` (or **Bird ID**) and drag a box
-around the bird. The five most likely species appear with how sure the
-model is. Click one to name the photo; in a stack, **Name all photos of the
-stack** (on by default) names every frame. With a region set, the closest
-match outside the region is mentioned when it differs (a rare visitor, or a
-wrong guess).
+In the full-screen view:
 
-The species shows in the info panel and in the **Up next** list of stacks.
-**Remove** forgets it.
+- :kbd:`F` (**Find birds**) finds every bird in the photo with the
+  **RT-DETR bird finder** (Apache-2.0, 83 MB, also under **AI models**),
+  numbers them on the photo left to right and suggests each one's species.
+- :kbd:`D` (**Draw a box**) adds a bird the finder missed: drag a box
+  around it.
+
+Click a bird (in the list or its box) to see its five most likely species
+with how sure the model is, and click one to add it to the photo. A photo
+can carry several species; click a chosen one again, or its ✕, to remove
+it. In a stack, **Name all photos of the stack** (on by default) applies
+the choice to every frame. With a region set, the closest match outside
+the region is mentioned when it differs (a rare visitor, or a wrong guess).
+
+The species show in the details pane and in the **Stacks** pane.
 
 Limits
 ------
 
-- The model always names a bird, even when the box holds none.
+- The identifier always names a bird, even when the box holds none.
+- The finder looks at the whole photo at 640 × 640 pixels, so a very small
+  bird in a large frame can be missed; draw a box around it.
 - Accuracy is measured on North American birds; elsewhere it is less
   certain.
 - A low confidence usually means similar species, not a bad box.

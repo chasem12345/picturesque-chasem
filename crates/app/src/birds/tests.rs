@@ -8,8 +8,11 @@ use picturesque_core::pixels::RgbImage;
 use serde_json::{Value, json};
 
 use crate::api::{Api, ApiErrorCode};
-use crate::models::{BIRDS, BIRDS_CLASSIFIER_FILE, BIRDS_LABELS_FILE};
+use crate::models::{BIRD_DETECTOR, BIRDS, BIRDS_CLASSIFIER_FILE, BIRDS_LABELS_FILE};
 use crate::ports::catalog::PhotoCatalog;
+use crate::ports::inference::{
+    InferenceEngine, InferenceError, Model, ModelSource, Probe, Provider, ProviderChoice, Tensor,
+};
 use crate::ports::models::ModelSpec;
 use crate::ports::settings::SettingsStore;
 use crate::settings::{BirdIdSettings, BirdRegion, Settings};
@@ -50,6 +53,71 @@ fn spec() -> ModelSpec {
 /// preprocessed grey) is the perfect match; the jay's is its opposite,
 /// the wren's halfway.
 fn world(installed: bool) -> (TestWorld, Api, i64) {
+    build(installed, false)
+}
+
+/// A detector that sees a bird on the right (sure), a bird on the left
+/// (less sure) and a person; other models get their input back, like the
+/// fake engine.
+#[derive(Debug)]
+struct Scripted;
+
+#[derive(Debug)]
+struct ScriptedModel;
+
+impl InferenceEngine for Scripted {
+    fn available(&self) -> Vec<Provider> {
+        vec![Provider::Cpu]
+    }
+
+    fn load(
+        &self,
+        _model: ModelSource<'_>,
+        _choice: ProviderChoice,
+    ) -> Result<Box<dyn Model>, InferenceError> {
+        Ok(Box::new(ScriptedModel))
+    }
+
+    fn probe(&self, _choice: ProviderChoice) -> Result<Probe, InferenceError> {
+        Ok(Probe {
+            provider: Provider::Cpu,
+            fallback: None,
+        })
+    }
+}
+
+impl Model for ScriptedModel {
+    fn provider(&self) -> Provider {
+        Provider::Cpu
+    }
+
+    fn fallback(&self) -> Option<&str> {
+        None
+    }
+
+    fn run(&self, inputs: Vec<Tensor>) -> Result<Vec<Tensor>, InferenceError> {
+        if inputs[0].name != "pixel_values" {
+            return Ok(inputs);
+        }
+        let mut logits = vec![-10.0f32; 300 * 80];
+        let mut boxes = vec![0.0f32; 300 * 4];
+        // (query, class, logit, box)
+        for (q, class, logit, b) in [
+            (0, 14, 3.0, [0.7, 0.5, 0.2, 0.2]),
+            (1, 14, 1.0, [0.2, 0.5, 0.1, 0.2]),
+            (2, 0, 5.0, [0.5, 0.5, 0.3, 0.6]),
+        ] {
+            logits[q * 80 + class] = logit;
+            boxes[q * 4..q * 4 + 4].copy_from_slice(&b);
+        }
+        Ok(vec![
+            Tensor::f32("logits", &[1, 300, 80], logits),
+            Tensor::f32("pred_boxes", &[1, 300, 4], boxes),
+        ])
+    }
+}
+
+fn build(installed: bool, detector: bool) -> (TestWorld, Api, i64) {
     let world = TestWorld::new(
         MemFs::new().file("/lib/IMG_1.JPG", b"jpg one"),
         FakeMetadata::default(),
@@ -98,13 +166,55 @@ fn world(installed: bool) -> (TestWorld, Api, i64) {
             ],
         );
     }
-    let api = Api::new(crate::api::AppContext {
-        models: vec![spec()],
-        model_store: store,
+    let finder = crate::models::catalog()
+        .into_iter()
+        .find(|m| m.id == BIRD_DETECTOR)
+        .unwrap();
+    let mut context = crate::api::AppContext {
+        models: vec![spec(), finder.clone()],
+        model_store: store.clone(),
         ..world.context()
-    })
-    .unwrap();
+    };
+    if detector {
+        store.install(&finder, &[]);
+        context.inference = Arc::new(Scripted);
+    }
+    let api = Api::new(context).unwrap();
     (world, api, id.0)
+}
+
+#[test]
+fn finds_every_bird_and_suggests_each_ones_species() {
+    let (_, api, id) = build(true, true);
+
+    let found = api.call("find_birds", json!({ "photo_id": id })).unwrap();
+
+    let birds = found["birds"].as_array().unwrap();
+    assert_eq!(birds.len(), 2, "the person is not a bird: {found}");
+    // Left to right.
+    let x = |b: &Value| b["box"]["x"].as_f64().unwrap();
+    assert!((x(&birds[0]) - 0.15).abs() < 1e-5);
+    assert!((x(&birds[1]) - 0.6).abs() < 1e-5);
+    assert!(birds[1]["score"].as_f64().unwrap() > birds[0]["score"].as_f64().unwrap());
+    for bird in birds {
+        assert_eq!(bird["suggestions"][0]["species"]["code"], "amerob");
+        assert_eq!(bird["suggestions"].as_array().unwrap().len(), 3);
+    }
+}
+
+#[test]
+fn finding_birds_needs_both_models() {
+    let (_, api, id) = build(true, false);
+    let err = api
+        .call("find_birds", json!({ "photo_id": id }))
+        .unwrap_err();
+    assert!(err.message.contains("bird finder"), "{}", err.message);
+
+    let (_, api, id) = build(false, false);
+    let err = api
+        .call("find_birds", json!({ "photo_id": id }))
+        .unwrap_err();
+    assert!(err.message.contains("bird identifier"), "{}", err.message);
 }
 
 fn identify(api: &Api, id: i64, area: Value) -> Result<Value, crate::api::ApiError> {
@@ -264,25 +374,28 @@ fn region_codes_are_checked() {
 }
 
 #[test]
-fn keeps_the_species_chosen_for_a_photo() {
+fn keeps_every_species_chosen_for_a_photo() {
     let (world, api, id) = world(true);
     let robin =
         json!({ "common": "American Robin", "scientific": "Turdus migratorius", "code": "amerob" });
+    let jay =
+        json!({ "common": "Blue Jay", "scientific": "Cyanocitta cristata", "code": "blujay" });
 
     api.call(
         "set_photo_species",
-        json!({ "photo_id": id, "species": robin }),
+        json!({ "photo_id": id, "species": [jay, robin, jay] }),
     )
     .unwrap();
 
     assert_eq!(
         api.call("photo_species", json!({ "photo_ids": [id, 999] }))
             .unwrap(),
-        json!([{ "photo_id": id, "species": robin }])
+        json!([{ "photo_id": id, "species": [jay, robin] }]),
+        "in the order chosen, once each"
     );
     api.call(
         "set_photo_species",
-        json!({ "photo_id": id, "species": null }),
+        json!({ "photo_id": id, "species": [] }),
     )
     .unwrap();
     assert_eq!(
@@ -293,7 +406,7 @@ fn keeps_the_species_chosen_for_a_photo() {
     // It leaves with the photo.
     api.call(
         "set_photo_species",
-        json!({ "photo_id": id, "species": robin }),
+        json!({ "photo_id": id, "species": [robin] }),
     )
     .unwrap();
     world

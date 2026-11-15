@@ -11,6 +11,7 @@ import type { ClearResult } from "./generated/ClearResult";
 import type { PhotosRemoved } from "./generated/PhotosRemoved";
 import type { BirdIdResult } from "./generated/BirdIdResult";
 import type { BirdRegionView } from "./generated/BirdRegionView";
+import type { FoundBirds } from "./generated/FoundBirds";
 import type { BoxView } from "./generated/BoxView";
 import type { PhotoSpeciesView } from "./generated/PhotoSpeciesView";
 import type { SpeciesView } from "./generated/SpeciesView";
@@ -113,6 +114,8 @@ export type { PhotosRemoved } from "./generated/PhotosRemoved";
 export type { BirdIdResult } from "./generated/BirdIdResult";
 export type { BirdIdSettings } from "./generated/BirdIdSettings";
 export type { BirdRegionView } from "./generated/BirdRegionView";
+export type { FoundBird } from "./generated/FoundBird";
+export type { FoundBirds } from "./generated/FoundBirds";
 export type { BoxView } from "./generated/BoxView";
 export type { PhotoSpeciesView } from "./generated/PhotoSpeciesView";
 export type { SpeciesView } from "./generated/SpeciesView";
@@ -207,15 +210,20 @@ export function identifyBird(
   });
 }
 
-/** Keeps (or with `null` forgets) the species chosen for a photo. */
+/** Keeps every species chosen for a photo (empty forgets them). */
 export function setPhotoSpecies(
   photoId: number,
-  species: SpeciesView | null,
+  species: SpeciesView[],
 ): Promise<void> {
   return transport.call<void>("set_photo_species", {
     photo_id: photoId,
     species,
   });
+}
+
+/** Finds every bird in a photo and suggests each one's species. */
+export function findBirds(photoId: number): Promise<FoundBirds> {
+  return transport.call<FoundBirds>("find_birds", { photo_id: photoId });
 }
 
 /** The chosen species of those of the photos that have one. */

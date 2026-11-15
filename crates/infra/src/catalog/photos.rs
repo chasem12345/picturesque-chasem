@@ -248,45 +248,49 @@ impl PhotoCatalog for SqliteCatalog {
     fn set_bird_species(
         &self,
         id: PhotoId,
-        species: Option<&picturesque_core::birds::Species>,
+        species: &[picturesque_core::birds::Species],
     ) -> Result<(), CatalogError> {
-        let conn = self.conn();
-        match species {
-            Some(s) => conn.execute(
-                "INSERT INTO bird_species (photo_id, common, scientific, code)
-                 VALUES (?1, ?2, ?3, ?4)
-                 ON CONFLICT (photo_id) DO UPDATE SET common = excluded.common,
-                     scientific = excluded.scientific, code = excluded.code",
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(storage)?;
+        tx.execute("DELETE FROM bird_species WHERE photo_id = ?1", [id.0])
+            .map_err(storage)?;
+        for s in species {
+            tx.execute(
+                "INSERT OR IGNORE INTO bird_species (photo_id, common, scientific, code)
+                 VALUES (?1, ?2, ?3, ?4)",
                 params![id.0, s.common, s.scientific, s.code],
-            ),
-            None => conn.execute("DELETE FROM bird_species WHERE photo_id = ?1", [id.0]),
+            )
+            .map_err(storage)?;
         }
-        .map_err(storage)?;
-        Ok(())
+        tx.commit().map_err(storage)
     }
 
     fn bird_species(
         &self,
         ids: &[PhotoId],
-    ) -> Result<Vec<(PhotoId, picturesque_core::birds::Species)>, CatalogError> {
+    ) -> Result<Vec<(PhotoId, Vec<picturesque_core::birds::Species>)>, CatalogError> {
         let conn = self.conn();
         let mut stmt = conn
-            .prepare_cached("SELECT common, scientific, code FROM bird_species WHERE photo_id = ?1")
+            .prepare_cached(
+                "SELECT common, scientific, code FROM bird_species
+                 WHERE photo_id = ?1 ORDER BY rowid",
+            )
             .map_err(storage)?;
         let mut found = Vec::new();
         for id in ids {
             let species = stmt
-                .query_row([id.0], |row| {
+                .query_map([id.0], |row| {
                     Ok(picturesque_core::birds::Species {
                         common: row.get(0)?,
                         scientific: row.get(1)?,
                         code: row.get(2)?,
                     })
                 })
-                .optional()
+                .map_err(storage)?
+                .collect::<Result<Vec<_>, _>>()
                 .map_err(storage)?;
-            if let Some(s) = species {
-                found.push((*id, s));
+            if !species.is_empty() {
+                found.push((*id, species));
             }
         }
         Ok(found)

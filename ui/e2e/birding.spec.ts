@@ -81,7 +81,7 @@ test("stacked, the loupe steps through every photo of each stack, with the stack
   await expect(page.getByTestId("upcoming-stacks")).toBeVisible();
   await expect(page.getByTestId("upcoming-entry")).toHaveCount(3);
   await expect(page.getByTestId("upcoming-remaining")).toContainText(
-    "2 more stacks",
+    "1 of 3 · 2 more",
   );
 
   // Every frame of the first stack, then the single photo, then the
@@ -113,8 +113,10 @@ test("stacked, the loupe steps through every photo of each stack, with the stack
   await expect(position).toHaveText("Stack 3 / 3");
   await expect(count).toHaveText("1 of 2");
   await expect(page.getByTestId("upcoming-remaining")).toContainText(
-    "Last stack",
+    "last stack",
   );
+  // Stacks already looked at stay in the pane, to go back to.
+  await expect(page.getByTestId("upcoming-entry")).toHaveCount(3);
 
   // Back: the previous stack is entered at its last frame.
   await page.keyboard.press("ArrowLeft");
@@ -127,8 +129,22 @@ test("stacked, the loupe steps through every photo of each stack, with the stack
   await expect(position).toHaveText("Stack 2 / 3");
 
   // Choosing a stack from the pane opens it.
-  await page.getByTestId("upcoming-entry").nth(1).click();
+  await page.getByTestId("upcoming-entry").nth(2).click();
   await expect(position).toHaveText("Stack 3 / 3");
+  await page.getByTestId("upcoming-entry").nth(0).click();
+  await expect(position).toHaveText("Stack 1 / 3");
+  // The pane widens by dragging its edge, and its thumbnails with it.
+  const thumb = page.getByTestId("upcoming-entry").first().locator("img");
+  const before = (await thumb.boundingBox())!.width;
+  const handle = page
+    .getByTestId("upcoming-stacks")
+    .getByTestId("resize-handle");
+  const edge = (await handle.boundingBox())!;
+  await page.mouse.move(edge.x + 4, edge.y + 200);
+  await page.mouse.down();
+  await page.mouse.move(edge.x + 160, edge.y + 200, { steps: 5 });
+  await page.mouse.up();
+  expect((await thumb.boundingBox())!.width).toBeGreaterThan(before * 1.5);
   // N hides the pane.
   await page.keyboard.press("n");
   await expect(page.getByTestId("upcoming-stacks")).toHaveCount(0);
@@ -166,12 +182,96 @@ test("Bird ID asks for a box, then for the model when it is not downloaded", asy
   await page.mouse.up();
 
   await expect(page.getByTestId("bird-id")).toContainText("Download");
+  // Finding every bird needs the models too.
+  await page.keyboard.press("f");
+  await expect(page.getByTestId("bird-id")).toContainText("Download the");
   await page.screenshot({ path: test.info().outputPath("bird-id.png") });
   // Esc closes the panel, then the loupe.
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("bird-id")).toHaveCount(0);
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("loupe")).toHaveCount(0);
+});
+
+test("Find birds numbers every bird and names the photo with several species", async ({
+  page,
+  request,
+}) => {
+  const DAY = "2004-05-15";
+  await page.goto("/");
+  await importFiles(request, {
+    "findbirds/pair.JPG": {
+      bytes: await similar(page, 90),
+      time: new Date(`${DAY}T07:00:00`),
+    },
+  });
+  // The bird models are not in the test manifest: the finder's answer is
+  // stubbed; choosing species goes to the real backend.
+  const species = (common: string, code: string) => ({
+    common,
+    scientific: `${common} (sci)`,
+    code,
+  });
+  const mallard = species("Mallard", "mallar3");
+  const wood = species("Wood Duck", "wooduc");
+  await page.route("**/api/commands/find_birds", (route) =>
+    route.fulfill({
+      json: {
+        region: null,
+        birds: [
+          {
+            box: { x: 0.1, y: 0.2, width: 0.3, height: 0.4 },
+            score: 0.95,
+            suggestions: [
+              { species: mallard, confidence: 0.81 },
+              { species: species("Hawaiian Duck", "hawduc"), confidence: 0.1 },
+            ],
+            elsewhere: null,
+          },
+          {
+            box: { x: 0.55, y: 0.3, width: 0.3, height: 0.4 },
+            score: 0.9,
+            suggestions: [{ species: wood, confidence: 0.7 }],
+            elsewhere: null,
+          },
+        ],
+      },
+    }),
+  );
+  await page.reload();
+  await showDay(page, DAY);
+  await page.getByTestId("timeline").locator("button.tile").first().dblclick();
+  await expect(page.getByTestId("loupe-image")).toBeVisible();
+
+  await page.keyboard.press("f");
+  await expect(page.getByTestId("bird-id-box")).toHaveCount(2);
+  await expect(page.getByTestId("bird-id-bird")).toHaveCount(2);
+  // The first bird is open: add its top suggestion.
+  await page.getByTestId("bird-id-suggestion").first().click();
+  // Choose the second bird by its box on the photo, and add it too.
+  await page.getByTestId("bird-id-box").nth(1).click();
+  await page.getByTestId("bird-id-suggestion").first().click();
+
+  await expect(page.getByTestId("bird-id-current")).toContainText("Mallard");
+  await expect(page.getByTestId("bird-id-current")).toContainText("Wood Duck");
+  await expect(page.getByTestId("loupe-species")).toContainText("Wood Duck");
+  await page.screenshot({ path: test.info().outputPath("find-birds.png") });
+  const id = (
+    await call<Photos>(request, "query_photos", { from: DAY, to: DAY })
+  ).photos[0]!.id;
+  const saved = await call<{ species: { code: string }[] }[]>(
+    request,
+    "photo_species",
+    { photo_ids: [id] },
+  );
+  expect(saved[0]!.species.map((s) => s.code)).toEqual(["mallar3", "wooduc"]);
+
+  // Removing one keeps the other.
+  await page.getByTestId("bird-id-forget").first().click();
+  await expect(page.getByTestId("bird-id-current")).not.toContainText(
+    "Mallard",
+  );
+  await expect(page.getByTestId("bird-id-current")).toContainText("Wood Duck");
 });
 
 test("Clear view removes the photos in view, and only those", async ({

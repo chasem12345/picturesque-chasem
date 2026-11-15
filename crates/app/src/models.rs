@@ -52,6 +52,12 @@ pub const BIRDS_WEIGHTS_FILE: &str = "onnx/wingclip_visual_int8.data";
 pub const BIRDS_CLASSIFIER_FILE: &str = "text_classifier_fp32.npy";
 pub const BIRDS_LABELS_FILE: &str = "labels.json";
 
+/// RT-DETR R18 (COCO + Objects365), which finds the birds in a photo for
+/// Bird ID (`birds`); ONNX export by onnx-community, pinned to a commit.
+pub const BIRD_DETECTOR: &str = "bird-detector-rtdetr";
+pub const BIRD_DETECTOR_FILE: &str = "onnx/model.onnx";
+const BIRD_DETECTOR_REPO: &str = "https://huggingface.co/onnx-community/rtdetr_r18vd_coco_o365/resolve/37122d8b9b89eb8384fba4d688d05051eaf7bb78";
+
 /// WingCLIP-0.3, pinned to a commit.
 const BIRDS_REPO: &str =
     "https://huggingface.co/johnlian/WingCLIP-0.3/resolve/fb647cf427ef473fb83610d543dfd70549d4a15c";
@@ -77,6 +83,23 @@ pub fn catalog() -> Vec<ModelSpec> {
         size,
     };
     vec![
+        ModelSpec {
+            id: BIRD_DETECTOR.into(),
+            name: "RT-DETR bird finder".into(),
+            purpose: "Finds every bird in a photo for Bird ID, so each can be \
+                  identified (Find birds, F). Needs the bird identifier."
+                .into(),
+            version: 1,
+            license: "Apache-2.0".into(),
+            license_url: "https://huggingface.co/PekingU/rtdetr_r18vd_coco_o365".into(),
+            homepage: "https://github.com/lyuwenyu/RT-DETR".into(),
+            files: vec![ModelFile {
+                name: BIRD_DETECTOR_FILE.into(),
+                url: format!("{BIRD_DETECTOR_REPO}/{BIRD_DETECTOR_FILE}"),
+                sha256: "6c74a62251534f427294342508a162a7cd142418b4dd6222d0d0198851724bfa".into(),
+                size: 82_572_357,
+            }],
+        },
         ModelSpec {
             id: BIRDS.into(),
             name: "WingCLIP-0.3 bird identifier".into(),

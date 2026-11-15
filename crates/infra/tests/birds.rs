@@ -38,17 +38,22 @@ fn keeps_replaces_and_forgets_a_photos_species() {
     let robin = species("American Robin", "amerob");
     let jay = species("Steller's Jay", "stejay");
 
-    c.set_bird_species(a, Some(&robin)).unwrap();
-    c.set_bird_species(b, Some(&robin)).unwrap();
-    c.set_bird_species(b, Some(&jay)).unwrap();
+    c.set_bird_species(a, std::slice::from_ref(&robin)).unwrap();
+    c.set_bird_species(b, std::slice::from_ref(&robin)).unwrap();
+    // Several species, once each, in the order given; replacing the old.
+    c.set_bird_species(b, &[jay.clone(), robin.clone(), jay.clone()])
+        .unwrap();
 
     assert_eq!(
         c.bird_species(&[a, b, PhotoId(99)]).unwrap(),
-        [(a, robin.clone()), (b, jay)]
+        [
+            (a, vec![robin.clone()]),
+            (b, vec![jay.clone(), robin.clone()])
+        ]
     );
 
-    c.set_bird_species(b, None).unwrap();
-    assert_eq!(c.bird_species(&[a, b]).unwrap(), [(a, robin)]);
+    c.set_bird_species(b, &[]).unwrap();
+    assert_eq!(c.bird_species(&[a, b]).unwrap(), [(a, vec![robin])]);
 
     // It leaves with the photo.
     c.remove_photo(a).unwrap();

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { imageUrl, type PhotoSummary } from "../api";
+  import ResizeHandle from "../components/ResizeHandle.svelte";
   import type { LibraryStore } from "./store.svelte";
 
   interface Props {
@@ -8,64 +9,69 @@
     index: number;
     /** Opens another entry. */
     onselect: (index: number) => void;
-    /** Species names by photo id, when known (Bird ID). */
+    /** Species names of a photo, when known (Bird ID). */
     species?: (photo: PhotoSummary) => string | null;
   }
 
   let { store, index, onselect, species }: Props = $props();
 
-  /** Entries shown: the current one and the ones after it. */
-  const AHEAD = 20;
+  /** Stacks shown before and after the open one. */
+  const BEHIND = 30;
+  const AHEAD = 30;
+  /** Width of the pane, resizable; thumbnails grow with it. */
+  let width = $state(240);
 
   $effect(() => {
     void store.ensureLoaded(Math.min(store.total - 1, index + AHEAD));
   });
 
+  const first = $derived(Math.max(0, index - BEHIND));
   const entries = $derived(
     Array.from(
-      { length: Math.min(AHEAD + 1, store.total - index) },
-      (_, k) => ({
-        at: index + k,
-        photo: store.photos[index + k],
-      }),
+      { length: Math.max(0, Math.min(store.total, index + AHEAD + 1) - first) },
+      (_, k) => ({ at: first + k, photo: store.photos[first + k] }),
     ).filter((e): e is { at: number; photo: PhotoSummary } => !!e.photo),
   );
   const remaining = $derived(Math.max(0, store.total - index - 1));
-  /** Photos in the stacks still to come (the loaded ones). */
-  const framesAhead = $derived(
-    entries.slice(1).reduce((n, e) => n + Math.max(1, e.photo.series_size), 0),
-  );
+  /** Wide enough for the thumbnail above its caption. */
+  const stacked = $derived(width >= 300);
 
   function time(p: PhotoSummary): string {
     return p.captured_at ? p.captured_at.slice(11, 19) : "";
   }
 
-  // Keeps the current entry at the top as the loupe moves.
+  // Keeps the open stack in view, with the ones before it above.
   let list: HTMLElement | undefined = $state();
   $effect(() => {
     void index;
-    list?.scrollTo?.({ top: 0 });
+    void entries.length;
+    list
+      ?.querySelector<HTMLElement>("[aria-current=true]")
+      ?.scrollIntoView?.({ block: "center" });
   });
 </script>
 
-<aside class="upnext" aria-label="Stacks up next" data-testid="upcoming-stacks">
+<aside
+  class="upnext"
+  style:width="{width}px"
+  aria-label="Stacks"
+  data-testid="upcoming-stacks"
+>
   <header>
-    <h2>Up next</h2>
+    <h2>Stacks</h2>
     <p data-testid="upcoming-remaining">
-      {remaining === 0
-        ? "Last stack"
-        : `${remaining} more ${remaining === 1 ? "stack" : "stacks"}`}{framesAhead >
-        0 && remaining <= AHEAD
-        ? ` · ${framesAhead} frames`
-        : ""}
+      {index + 1} of {store.total} · {remaining === 0
+        ? "last stack"
+        : `${remaining} more`}
     </p>
   </header>
-  <ol bind:this={list}>
+  <ol bind:this={list} class:stacked>
     {#each entries as { at, photo } (photo.id)}
       {@const name = species?.(photo) ?? null}
       <li>
         <button
           class:current={at === index}
+          class:seen={at < index}
           aria-current={at === index}
           onclick={(e) => {
             e.currentTarget.blur();
@@ -107,11 +113,19 @@
       </li>
     {/each}
   </ol>
+  <ResizeHandle
+    bind:width
+    edge="right"
+    min={180}
+    max={640}
+    storageKey="picturesque.stacksWidth"
+    label="Resize the stacks pane"
+  />
 </aside>
 
 <style>
   .upnext {
-    width: 13rem;
+    position: relative;
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
@@ -162,6 +176,12 @@
     cursor: pointer;
   }
 
+  .stacked button {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.3rem;
+  }
+
   button:hover {
     background: #22221f;
   }
@@ -171,14 +191,24 @@
     background: #22221f;
   }
 
+  /* Stacks already looked at stay, a little quieter. */
+  button.seen:not(:hover) {
+    opacity: 0.6;
+  }
+
+  /* Grows with the pane: about 40% of it, or all of it when stacked. */
   .thumb {
     position: relative;
-    width: 4.5rem;
+    width: 42%;
     aspect-ratio: 3 / 2;
     flex-shrink: 0;
     border-radius: 4px;
     overflow: hidden;
     background: #0d0d0c;
+  }
+
+  .stacked .thumb {
+    width: 100%;
   }
 
   img {

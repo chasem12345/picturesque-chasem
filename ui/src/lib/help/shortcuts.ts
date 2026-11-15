@@ -63,6 +63,7 @@ export const SHORTCUTS: ShortcutGroup[] = [
         action: "Skip a whole stack (also Page Up/Down)",
       },
       { keys: ["N"], action: "Show or hide the stacks up next (stacked)" },
+      { keys: ["F"], action: "Bird ID: find and identify every bird" },
       { keys: ["D"], action: "Bird ID: drag a box around a bird" },
       { keys: ["Z"], action: "Zoom to 100%" },
       { keys: ["I"], action: "Show or hide the photo's details" },

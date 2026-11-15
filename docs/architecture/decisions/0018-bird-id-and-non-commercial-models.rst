@@ -32,13 +32,17 @@ Decision
   license and "non-commercial use only" in the model list. This is an
   exception to ADR-0006 for this fork only; a distribution for commercial
   use must not ship or offer it.
-- The user draws the box around the bird; there is no detector.
+- Birds are boxed by the user, or found by **RT-DETR R18** (COCO +
+  Objects365, Apache-2.0, the onnx-community ONNX export pinned to a
+  commit), keeping its "bird" class. Each box is then identified by
+  WingCLIP.
 - Regions come from **eBird**'s species list for a region code, asked with
   the user's own API key, only when they press the button, and stored in
   the settings. This is the only network access besides model downloads
   (an exception to the "offline" rule, opt-in and user-initiated).
-- The chosen species is stored per photo in the catalog (migration
-  ``0021_bird_species``), not in XMP sidecars.
+- The chosen species, several per photo, are stored in the catalog
+  (migrations ``0021_bird_species`` and ``0022_bird_species_many``), not
+  in XMP sidecars.
 
 Consequences
 ------------

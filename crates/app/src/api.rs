@@ -1040,6 +1040,15 @@ impl Api {
                         .map_err(bird_error)?,
                 )
             }
+            "find_birds" => {
+                let crate::birds::FindBirdsArgs { photo_id } = parse_args(command, args)?;
+                self.require_photo(photo_id)?;
+                respond(
+                    self.birds
+                        .find_birds(PhotoId(photo_id))
+                        .map_err(bird_error)?,
+                )
+            }
             "set_photo_species" => {
                 let crate::birds::SetSpeciesArgs { photo_id, species } = parse_args(command, args)?;
                 self.require_photo(photo_id)?;

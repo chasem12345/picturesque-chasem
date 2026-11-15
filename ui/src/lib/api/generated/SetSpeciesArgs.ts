@@ -6,6 +6,6 @@ import type { SpeciesView } from "./SpeciesView";
  */
 export type SetSpeciesArgs = { photo_id: number, 
 /**
- * `null` forgets the species.
+ * Every species on the photo, in the order chosen; empty forgets them.
  */
-species: SpeciesView | null, };
+species: Array<SpeciesView>, };

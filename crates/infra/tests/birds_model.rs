@@ -16,7 +16,8 @@ use std::sync::Arc;
 
 use picturesque_app::api::{Api, AppContext};
 use picturesque_app::models::{
-    BIRDS, BIRDS_CLASSIFIER_FILE, BIRDS_LABELS_FILE, BIRDS_MODEL_FILE, BIRDS_WEIGHTS_FILE,
+    BIRD_DETECTOR, BIRD_DETECTOR_FILE, BIRDS, BIRDS_CLASSIFIER_FILE, BIRDS_LABELS_FILE,
+    BIRDS_MODEL_FILE, BIRDS_WEIGHTS_FILE,
 };
 use picturesque_app::ports::catalog::PhotoCatalog;
 use picturesque_app::ports::events::NoEvents;
@@ -145,5 +146,88 @@ fn real_model_identifies_a_bird() {
             result["suggestions"][0]["species"]["code"],
             expected.as_str()
         );
+    }
+
+    // With the RT-DETR bird finder (PICTURESQUE_BIRD_DETECTOR, its
+    // model.onnx): every bird found, each identified.
+    let Some(detector) = std::env::var_os("PICTURESQUE_BIRD_DETECTOR") else {
+        return;
+    };
+    let models = dir.path().join("models");
+    let dest = models
+        .join(BIRD_DETECTOR)
+        .join("v1")
+        .join(BIRD_DETECTOR_FILE);
+    std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+    std::fs::copy(&detector, &dest).unwrap();
+    let finder = ModelSpec {
+        id: BIRD_DETECTOR.into(),
+        name: BIRD_DETECTOR.into(),
+        purpose: String::new(),
+        version: 1,
+        license: "Apache-2.0".into(),
+        license_url: String::new(),
+        homepage: String::new(),
+        files: vec![ModelFile {
+            name: BIRD_DETECTOR_FILE.into(),
+            url: "http://127.0.0.1:9/unused".into(),
+            sha256: String::new(),
+            size: std::fs::metadata(&dest).unwrap().len(),
+        }],
+    };
+    let api = Api::new(AppContext {
+        models: vec![installed(&models, Path::new(&model_dir)), finder],
+        model_store: Arc::new(picturesque_infra::models::HttpModelStore::new(models)),
+        ..context(&catalog, dir.path())
+    })
+    .unwrap();
+    let started = std::time::Instant::now();
+    let found = api.call("find_birds", json!({ "photo_id": id.0 })).unwrap();
+    println!("found in {:?}", started.elapsed());
+    let birds = found["birds"].as_array().unwrap();
+    for (n, b) in birds.iter().enumerate() {
+        println!(
+            "bird {} ({:.0}% sure) at {:.2},{:.2} {:.2}x{:.2}: {} {:.0}%",
+            n + 1,
+            b["score"].as_f64().unwrap() * 100.0,
+            b["box"]["x"].as_f64().unwrap(),
+            b["box"]["y"].as_f64().unwrap(),
+            b["box"]["width"].as_f64().unwrap(),
+            b["box"]["height"].as_f64().unwrap(),
+            b["suggestions"][0]["species"]["common"],
+            b["suggestions"][0]["confidence"].as_f64().unwrap() * 100.0
+        );
+    }
+    let min: usize = std::env::var("PICTURESQUE_BIRD_COUNT")
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(1);
+    assert!(birds.len() >= min, "found {} birds", birds.len());
+}
+
+/// Infrastructure for an `Api` over `catalog`, without models.
+fn context(catalog: &Arc<SqliteCatalog>, dir: &Path) -> AppContext {
+    AppContext {
+        pipeline_store: catalog.clone(),
+        watcher: Arc::new(picturesque_app::ports::watcher::NoWatcher),
+        critic: Arc::new(picturesque_infra::critic::CriticAdapter::new()),
+        power: Arc::new(picturesque_infra::power::SystemPower),
+        species_lists: Arc::new(picturesque_infra::birds::EbirdSpeciesLists::default()),
+        settings_store: catalog.clone(),
+        catalog: catalog.clone(),
+        fs: Arc::new(picturesque_infra::fs::StdFileSystem),
+        metadata: Arc::new(picturesque_infra::metadata::ExifMetadataReader),
+        geocoder: Arc::new(picturesque_infra::geocode::GeoNamesGeocoder::default()),
+        events: Arc::new(NoEvents),
+        decoder: Arc::new(picturesque_infra::images::VipsDecoder),
+        sidecars: Arc::new(picturesque_infra::xmp::XmpSidecars),
+        pixels: Arc::new(picturesque_infra::images::VipsPixels),
+        analyzers: Vec::new(),
+        inference: Arc::new(picturesque_infra::inference::OrtEngine::new(2)),
+        models: Vec::new(),
+        model_store: Arc::new(picturesque_infra::models::HttpModelStore::new(
+            dir.join("models"),
+        )),
+        cache_dir: dir.join("cache"),
     }
 }

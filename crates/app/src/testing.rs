@@ -457,7 +457,7 @@ pub struct MemoryCatalog {
     /// Writes of photos and analysis fail as if the disk were full.
     pub full: std::sync::atomic::AtomicBool,
     /// Bird species chosen with Bird ID.
-    pub species: Mutex<HashMap<PhotoId, picturesque_core::birds::Species>>,
+    pub species: Mutex<HashMap<PhotoId, Vec<picturesque_core::birds::Species>>>,
 }
 
 impl MemoryCatalog {
@@ -723,20 +723,27 @@ impl PhotoCatalog for MemoryCatalog {
     fn set_bird_species(
         &self,
         id: PhotoId,
-        species: Option<&picturesque_core::birds::Species>,
+        species: &[picturesque_core::birds::Species],
     ) -> Result<(), CatalogError> {
         let mut stored = self.species.lock().unwrap();
-        match species {
-            Some(s) => stored.insert(id, s.clone()),
-            None => stored.remove(&id),
-        };
+        let mut unique: Vec<picturesque_core::birds::Species> = Vec::new();
+        for s in species {
+            if !unique.iter().any(|u| u.code == s.code) {
+                unique.push(s.clone());
+            }
+        }
+        if unique.is_empty() {
+            stored.remove(&id);
+        } else {
+            stored.insert(id, unique);
+        }
         Ok(())
     }
 
     fn bird_species(
         &self,
         ids: &[PhotoId],
-    ) -> Result<Vec<(PhotoId, picturesque_core::birds::Species)>, CatalogError> {
+    ) -> Result<Vec<(PhotoId, Vec<picturesque_core::birds::Species>)>, CatalogError> {
         let stored = self.species.lock().unwrap();
         Ok(ids
             .iter()
