@@ -32,6 +32,7 @@ const SETTINGS: Settings = {
   delete_after_copy: "verified",
   delete_after_import: "never",
   pair_view: "image",
+  fast_mode: false,
 };
 
 const getSettings = vi.fn<() => Promise<Settings>>();

@@ -188,6 +188,7 @@ pub struct Api {
     finish: crate::finish::FinishService,
     clear: crate::clear::ClearService,
     originals: Arc<crate::originals::OriginalsService>,
+    view: crate::view::ViewService,
 }
 
 impl fmt::Debug for Api {
@@ -243,6 +244,13 @@ impl Api {
             Arc::clone(&events) as Arc<dyn EventSink>,
         ));
         let _ = events.analysis.set(Arc::clone(&analysis));
+        if ctx
+            .settings_store
+            .load_settings()
+            .is_ok_and(|s| s.fast_mode)
+        {
+            analysis.set_fast(true);
+        }
         let series = Arc::new(SeriesService::new(
             Arc::clone(&ctx.catalog),
             Arc::clone(&ctx.settings_store),
@@ -326,6 +334,10 @@ impl Api {
             },
         ));
         Ok(Self {
+            view: crate::view::ViewService::new(
+                Arc::clone(&ctx.catalog),
+                Arc::clone(&events) as Arc<dyn EventSink>,
+            ),
             critic,
             background_critic,
             activity,
@@ -617,13 +629,18 @@ impl Api {
                     || update.ranking.is_some()
                     || update.auto_pick.is_some()
                     || update.taste.is_some()
-                    || update.critic.is_some();
+                    || update.critic.is_some()
+                    || update.fast_mode.is_some();
+                let fast_mode = update.fast_mode;
                 let critic_changed = update.critic.is_some() || update.ai.is_some();
                 let deletes_now =
                     update.delete_after_import == Some(DeleteAfterImport::Immediately);
                 let settings = self.settings.update(update).map_err(settings_error)?;
                 if deletes_now {
                     self.clear_leftover_originals();
+                }
+                if let Some(fast) = fast_mode {
+                    self.analysis.set_fast(fast);
                 }
                 if series_changed {
                     self.series.recompute().map_err(catalog_error)?;
@@ -991,6 +1008,17 @@ impl Api {
                 self.embeddings.invalidate();
                 respond(result)
             }
+            "clear_view" => {
+                let crate::view::ClearViewArgs { query } = if args.is_null() {
+                    crate::view::ClearViewArgs::default()
+                } else {
+                    parse_args(command, args)?
+                };
+                query
+                    .validate()
+                    .map_err(|m| ApiError::new(ApiErrorCode::InvalidArguments, m))?;
+                respond(self.view.clear(&query).map_err(catalog_error)?)
+            }
             "finish_status" => {
                 no_args(command, &args)?;
                 respond(self.finish.status().map_err(catalog_error)?)
@@ -1276,7 +1304,8 @@ mod tests {
                 "labels": { "pick": "green", "auto_pick": "yellow" },
                 "delete_after_copy": "verified",
                 "delete_after_import": "never",
-                "pair_view": "image"
+                "pair_view": "image",
+                "fast_mode": false
             })
         );
     }

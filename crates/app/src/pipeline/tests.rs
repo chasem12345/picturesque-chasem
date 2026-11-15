@@ -797,6 +797,52 @@ fn in_place_writing_a_sidecar_does_not_import_the_photo_again() {
 }
 
 #[test]
+fn in_place_photos_of_a_wiped_card_leave_the_view_and_new_ones_arrive() {
+    let world = in_place_world();
+    let p = world.pipeline();
+    p.add_source(Path::new("/shoot"), true).unwrap();
+    scan_all(&p);
+    assert_eq!(p.run_until_idle(), 2);
+
+    // The card is wiped and one new photo is taken.
+    world.fs.delete(Path::new("/shoot/IMG_1.CR3"));
+    world.fs.delete(Path::new("/shoot/IMG_1.JPG"));
+    world.fs.delete(Path::new("/shoot/sub/IMG_2.JPG"));
+    world.fs.write(Path::new("/shoot/IMG_9.JPG"), b"jpg nine");
+    scan_all(&p);
+    p.run_until_idle();
+
+    // The pair's sidecar is still on the card, but without its pixels the
+    // photo is gone; the new photo is in view.
+    assert_eq!(asset_paths(&world), ["IMG_9.JPG"]);
+    assert!(
+        world
+            .pipeline
+            .messages()
+            .iter()
+            .any(|m| m.starts_with("Removed 2 photos whose files are no longer in"))
+    );
+    assert!(world.events.0.lock().unwrap().iter().any(|e| matches!(
+        e,
+        AppEvent::PhotosRemoved(crate::view::PhotosRemoved { removed: 2 })
+    )));
+}
+
+#[test]
+fn in_place_a_card_taken_out_keeps_its_photos_in_view() {
+    let world = in_place_world();
+    let p = world.pipeline();
+    p.add_source(Path::new("/shoot"), true).unwrap();
+    scan_all(&p);
+    p.run_until_idle();
+
+    world.fs.delete_dir(Path::new("/shoot"));
+    scan_all(&p);
+
+    assert_eq!(world.catalog.all_photos().unwrap().len(), 2);
+}
+
+#[test]
 fn in_place_only_the_open_folder_is_a_source() {
     let world = in_place_world();
     let p = world.pipeline();

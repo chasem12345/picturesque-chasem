@@ -2,7 +2,9 @@
   import Icon from "../components/Icon.svelte";
   import Critique from "./Critique.svelte";
   import SeriesRibbon from "./SeriesRibbon.svelte";
+  import UpcomingStacks from "./UpcomingStacks.svelte";
   import { SeriesStrip, stripPrefs } from "./series-strip.svelte";
+  import { entryMember, step, type Entry } from "./stack-nav";
   import {
     ApiError,
     canReveal,
@@ -11,9 +13,11 @@
     getCritique,
     getPhoto,
     type CriticStatus,
+    type DecisionView,
     revealInFolder,
     type PairView,
     type PhotoDetail,
+    type PhotoSummary,
   } from "../api";
   import { isPair, pairSetting, photoUrl, viewLabel } from "./pair-view.svelte";
   import { joinPath } from "./sidecars.svelte";
@@ -34,6 +38,15 @@
     autoAdvance?: boolean;
     /** The library folder, to show files in the file manager. */
     libraryFolder?: string | null;
+    /** Whether series are stacked: the loupe then steps through each
+     * stack's photos before moving on, and shows the stacks up next. */
+    stacked?: boolean;
+    /** The photo shown: a member of the open stack, or the list entry. */
+    shown?: PhotoSummary | null;
+    /** Follows decisions (so the series ribbon stays current). */
+    subscribeDecisions?: (
+      listener: (decisions: DecisionView[]) => void,
+    ) => () => void;
   }
 
   let {
@@ -45,6 +58,11 @@
     onrate,
     autoAdvance = $bindable(false),
     libraryFolder = null,
+    stacked = false,
+    // Write-only here: the parent reads it through bind:shown.
+    // eslint-disable-next-line no-useless-assignment
+    shown = $bindable(null),
+    subscribeDecisions,
   }: Props = $props();
 
   /** Runs a toolbar action and gives the keyboard back to the shortcuts. */
@@ -63,24 +81,100 @@
   let focusPoint = { x: 0.5, y: 0.5 };
   let drag: { x: number; y: number; left: number; top: number } | null = null;
 
-  const photo = $derived(store.photos[index]);
+  /** The list entry: with stacked series, the photo shown for the stack. */
+  const listPhoto = $derived(store.photos[index]);
+  /** With stacked series, the member of the open stack shown instead of
+   * the list entry; `null` shows the entry itself. */
+  let memberId = $state<number | null>(null);
+  /** Where to enter the stack just opened, once its members are known. */
+  let pendingEntry = $state<Entry | null>(null);
 
-  // The photo's series: the ribbon, and what to compare with.
+  // Another entry starts at its own photo (unless entered at an end).
+  $effect(() => {
+    void index;
+    memberId = null;
+  });
+
+  // The entry's series: the ribbon, stepping through stacks, and what to
+  // compare with.
   const strip = new SeriesStrip();
   $effect(() => {
     // Decisions change what the ribbon shows (rejects, picks, the best).
-    void [photo?.id, photo?.flag, photo?.best_in_series, photo?.series_id];
-    void strip.load(photo);
+    void [
+      listPhoto?.id,
+      listPhoto?.flag,
+      listPhoto?.best_in_series,
+      listPhoto?.series_id,
+    ];
+    void strip.load(listPhoto);
   });
+  $effect(() => subscribeDecisions?.((d) => strip.applyDecisions(d)));
+  /** The stack's members are loaded for the entry shown. */
+  const stripReady = $derived(!!listPhoto && strip.loadedFor === listPhoto.id);
+  $effect(() => {
+    const entry = pendingEntry;
+    if (entry === null || !stripReady) return;
+    pendingEntry = null;
+    memberId = entryMember(
+      strip.members.map((p) => p.id),
+      entry,
+    );
+  });
+  /** Entering a stack at one end: wait for its members rather than
+   * flashing the stack's best photo first. */
+  const entering = $derived(
+    stacked &&
+      pendingEntry !== null &&
+      !!listPhoto &&
+      listPhoto.series_size > 1 &&
+      !stripReady,
+  );
+
+  const photo = $derived(
+    (memberId !== null && stripReady
+      ? strip.members.find((p) => p.id === memberId)
+      : undefined) ?? listPhoto,
+  );
+  $effect(() => {
+    shown = photo ?? null;
+  });
+
   const inSeries = $derived(!!photo && strip.position(photo.id) !== null);
   const rival = $derived(
     inSeries && stripPrefs.compareBest && photo ? strip.rival(photo.id) : null,
   );
   const inList = (id: number) => store.photos.some((p) => p.id === id);
+  /** Ribbon frames that can be opened: with stacked series, every member
+   * of the open stack; otherwise those in the list. */
+  const reachable = (id: number) =>
+    (stacked && strip.members.some((p) => p.id === id)) || inList(id);
   function openFromRibbon(id: number) {
+    if (stacked && strip.members.some((p) => p.id === id)) {
+      memberId = id === listPhoto?.id ? null : id;
+      return;
+    }
     const at = store.photos.findIndex((p) => p.id === id);
     if (at >= 0) onnavigate(at);
   }
+
+  const UPNEXT_KEY = "picturesque.upNext";
+  /** The stacks-up-next pane, shown while stacked. */
+  let showUpNext = $state(
+    (() => {
+      try {
+        return localStorage.getItem(UPNEXT_KEY) !== "false";
+      } catch {
+        return true;
+      }
+    })(),
+  );
+  $effect(() => {
+    try {
+      localStorage.setItem(UPNEXT_KEY, String(showUpNext));
+    } catch {
+      // A convenience only.
+    }
+  });
   function toggleCompare() {
     if (inSeries) stripPrefs.compareBest = !stripPrefs.compareBest;
   }
@@ -119,30 +213,72 @@
 
   // A new photo starts fitted.
   $effect(() => {
-    void index;
+    void photo?.id;
     zoomed = false;
     fullLoaded = false;
   });
 
   $effect(() => {
-    void [index, view];
+    void [photo?.id, view];
     broken = false;
   });
 
   // Preload neighbours so moving through photos feels instant.
   $effect(() => {
+    const near: PhotoSummary[] = [];
     for (const i of [index - 1, index + 1]) {
       const neighbour = store.photos[i];
-      if (neighbour) new Image().src = photoUrl(neighbour, "preview", view);
+      if (neighbour) near.push(neighbour);
     }
+    if (stacked && photo) {
+      const at = strip.members.findIndex((p) => p.id === photo.id);
+      for (const k of [at - 1, at + 1]) {
+        const member = at >= 0 ? strip.members[k] : undefined;
+        if (member) near.push(member);
+      }
+    }
+    for (const p of near) new Image().src = photoUrl(p, "preview", view);
   });
 
   const percent = (score: number) => `${Math.round(score * 100)}%`;
 
-  function go(delta: number) {
-    const next = index + delta;
-    if (next >= 0 && next < store.total) onnavigate(next);
+  /** Where a step goes: through the open stack's photos when stacked. */
+  function target(delta: 1 | -1, wholeStack = false) {
+    return step({
+      index,
+      total: store.total,
+      members: stacked && stripReady ? strip.members.map((p) => p.id) : [],
+      currentId: photo?.id ?? null,
+      delta,
+      wholeStack,
+    });
   }
+
+  function go(delta: 1 | -1, wholeStack = false) {
+    if (entering) return;
+    const to = target(delta, wholeStack);
+    if (!to) return;
+    if (to.kind === "member") {
+      memberId = to.id === listPhoto?.id ? null : to.id;
+      return;
+    }
+    pendingEntry = stacked ? to.entry : null;
+    onnavigate(to.index);
+  }
+
+  /** The next photo (also after a decision with Auto-advance). */
+  export function next() {
+    go(1);
+  }
+
+  /** Opens another list entry (from the stacks-up-next pane). */
+  function openEntry(at: number) {
+    pendingEntry = null;
+    onnavigate(at);
+  }
+
+  const canBack = $derived(!entering && target(-1) !== null);
+  const canForward = $derived(!entering && target(1) !== null);
 
   function toggleZoom(point?: { x: number; y: number }) {
     focusPoint = point ?? { x: 0.5, y: 0.5 };
@@ -211,8 +347,13 @@
   function onkeydown(e: KeyboardEvent) {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     const actions: Record<string, () => void> = {
-      ArrowRight: () => go(1),
-      ArrowLeft: () => go(-1),
+      // Shift or Page Up/Down skips the rest of a stack.
+      ArrowRight: () => go(1, e.shiftKey),
+      ArrowLeft: () => go(-1, e.shiftKey),
+      PageDown: () => go(1, true),
+      PageUp: () => go(-1, true),
+      n: () => (showUpNext = !showUpNext),
+      N: () => (showUpNext = !showUpNext),
       Escape: () => (zoomed ? (zoomed = false) : onclose()),
       z: () => toggleZoom(),
       Z: () => toggleZoom(),
@@ -247,12 +388,17 @@
   aria-label="Photo"
   data-testid="loupe"
 >
+  {#if stacked && showUpNext}
+    <UpcomingStacks {store} {index} onselect={openEntry} />
+  {/if}
   <div
     class="stage"
     class:has-ribbon={inSeries}
     class:versus={!!rival && !zoomed}
   >
-    {#if photo}
+    {#if entering}
+      <p class="loading">Loading…</p>
+    {:else if photo}
       <!-- A new element per photo: a reused <img> keeps showing the previous
            photo until the next one has loaded. -->
       {#key photo.id}
@@ -324,23 +470,35 @@
         members={strip.members}
         currentId={photo.id}
         bestId={strip.bestId}
-        reachable={inList}
+        {reachable}
         onselect={openFromRibbon}
       />
     {/if}
 
     <div class="toolbar">
       <button
-        onclick={() => go(-1)}
-        disabled={index === 0}
+        onclick={(e) => act(e, () => go(-1))}
+        disabled={!canBack}
         aria-label="Previous photo"><Icon name="chevron-left" /></button
       >
-      <span data-testid="loupe-position">{index + 1} / {store.total}</span>
+      <span
+        data-testid="loupe-position"
+        title={stacked ? "Stack, of the stacks in view" : undefined}
+        >{stacked ? "Stack " : ""}{index + 1} / {store.total}</span
+      >
       <button
-        onclick={() => go(1)}
-        disabled={index >= store.total - 1}
+        onclick={(e) => act(e, () => go(1))}
+        disabled={!canForward}
         aria-label="Next photo"><Icon name="chevron-right" /></button
       >
+      {#if stacked}
+        <button
+          onclick={(e) => act(e, () => (showUpNext = !showUpNext))}
+          aria-pressed={showUpNext}
+          title="Show the stacks up next (N)"
+          data-testid="loupe-upnext"><Icon name="queue-list" /> Up next</button
+        >
+      {/if}
       <button onclick={() => toggleZoom()} aria-pressed={zoomed}
         ><Icon name="magnifying-glass-plus" /> {zoomed ? "Fit" : "100%"}</button
       >
@@ -590,8 +748,10 @@
         />
       {/if}
       <p class="keys muted">
-        ← → move · P or ↑ pick · X or ↓ reject · U unflag · 0–5 stars ·
-        Shift+key decides and moves on · Z zoom · I info{photo && isPair(photo)
+        ← → move{stacked
+          ? " through each stack · Shift+← → or Page Up/Down skip a stack · N up next"
+          : ""} · P or ↑ pick · X or ↓ reject · U unflag · 0–5 stars · Shift+key decides
+        and moves on · Z zoom · I info{photo && isPair(photo)
           ? " · R RAW or JPEG"
           : ""} · Esc close
       </p>

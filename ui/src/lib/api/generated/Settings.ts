@@ -87,4 +87,11 @@ delete_after_import: DeleteAfterImport,
 /**
  * Which file of a RAW+JPEG pair the grid and loupe show.
  */
-pair_view: "image" | "raw", };
+pair_view: "image" | "raw", 
+/**
+ * Fast mode (`docs/features/fast-mode.rst`): photos show as fast as
+ * possible. Only what series need is analyzed (from the grid images),
+ * so there are no quality scores and nothing is auto-picked; turning
+ * it off scores everything that was skipped.
+ */
+fast_mode: boolean, };

@@ -66,6 +66,19 @@ pub struct Settings {
     /// Which file of a RAW+JPEG pair the grid and loupe show.
     #[ts(type = "\"image\" | \"raw\"")]
     pub pair_view: PairView,
+    /// Fast mode (`docs/features/fast-mode.rst`): photos show as fast as
+    /// possible. Only what series need is analyzed (from the grid images),
+    /// so there are no quality scores and nothing is auto-picked; turning
+    /// it off scores everything that was skipped.
+    pub fast_mode: bool,
+}
+
+impl Settings {
+    /// Whether auto-pick suggests keepers: it is on and fast mode is off
+    /// (fast mode has no scores to pick by).
+    pub fn auto_pick_active(&self) -> bool {
+        self.auto_pick.enabled && !self.fast_mode
+    }
 }
 
 /// What **Clear folder…** may delete after keepers were copied out of a
@@ -470,6 +483,7 @@ impl Default for Settings {
             delete_after_copy: DeleteAfterCopy::default(),
             delete_after_import: DeleteAfterImport::default(),
             pair_view: PairView::default(),
+            fast_mode: false,
         }
     }
 }
@@ -509,6 +523,8 @@ pub struct SettingsUpdate {
     pub delete_after_import: Option<DeleteAfterImport>,
     #[ts(type = "\"image\" | \"raw\"", optional)]
     pub pair_view: Option<PairView>,
+    #[ts(optional)]
+    pub fast_mode: Option<bool>,
 }
 
 /// Why settings could not be read or changed.
@@ -674,6 +690,9 @@ impl SettingsService {
         }
         if let Some(view) = update.pair_view {
             settings.pair_view = view;
+        }
+        if let Some(fast) = update.fast_mode {
+            settings.fast_mode = fast;
         }
         self.store.save_settings(&settings)?;
         Ok(settings)
@@ -1122,6 +1141,42 @@ pub(crate) mod tests {
             assert_eq!(result.is_ok(), ok, "{minutes}");
         }
         assert_eq!(service.get().unwrap().import.rescan_minutes, 1440);
+    }
+
+    #[test]
+    fn fast_mode_is_off_by_default_and_turns_auto_pick_off() {
+        let (service, _) = service(&[]);
+        let settings = service.get().unwrap();
+        assert!(!settings.fast_mode);
+        assert!(settings.auto_pick_active());
+
+        let fast = service
+            .update(SettingsUpdate {
+                fast_mode: Some(true),
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(fast.fast_mode);
+        assert!(fast.auto_pick.enabled, "the auto-pick choice is kept");
+        assert!(!fast.auto_pick_active());
+
+        // (enabled, fast_mode, active)
+        for (enabled, fast_mode, active) in [
+            (true, false, true),
+            (false, false, false),
+            (true, true, false),
+            (false, true, false),
+        ] {
+            let s = Settings {
+                auto_pick: AutoPickSettings {
+                    enabled,
+                    ..Default::default()
+                },
+                fast_mode,
+                ..Default::default()
+            };
+            assert_eq!(s.auto_pick_active(), active, "{enabled} {fast_mode}");
+        }
     }
 
     #[test]

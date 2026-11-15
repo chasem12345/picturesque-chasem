@@ -8,6 +8,7 @@ import type { SidecarStatus } from "./generated/SidecarStatus";
 import type { FinishResult } from "./generated/FinishResult";
 import type { ClearPlan } from "./generated/ClearPlan";
 import type { ClearResult } from "./generated/ClearResult";
+import type { PhotosRemoved } from "./generated/PhotosRemoved";
 import type { FinishStatus } from "./generated/FinishStatus";
 import type { ModelView } from "./generated/ModelView";
 import type { ExportArgs } from "./generated/ExportArgs";
@@ -103,6 +104,7 @@ export type { ColorLabel } from "./generated/ColorLabel";
 export type { FinishResult } from "./generated/FinishResult";
 export type { ClearPlan } from "./generated/ClearPlan";
 export type { ClearResult } from "./generated/ClearResult";
+export type { PhotosRemoved } from "./generated/PhotosRemoved";
 export type { DeleteAfterImport } from "./generated/DeleteAfterImport";
 export type { OriginalsChoice } from "./generated/OriginalsChoice";
 export type { OriginalsOffer } from "./generated/OriginalsOffer";
@@ -162,6 +164,14 @@ export function clearPlan(): Promise<ClearPlan> {
  */
 export function clearFolder(): Promise<ClearResult> {
   return transport.call<ClearResult>("clear_folder");
+}
+
+/**
+ * Removes the photos matching `query` (every photo when empty) from the
+ * catalog, leaving their files where they are.
+ */
+export function clearView(query: PhotoQuery = {}): Promise<PhotosRemoved> {
+  return transport.call<PhotosRemoved>("clear_view", { query });
 }
 
 /** What finishing the folder would do. */

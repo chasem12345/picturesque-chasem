@@ -821,6 +821,37 @@ impl ImportPipeline {
         self.emit_progress(true);
     }
 
+    /// Removes photos whose files are no longer in `folder` from the
+    /// catalog (never touching files) and says so.
+    fn prune_missing(&self, folder: &Path) {
+        match crate::view::prune_missing(self.deps.catalog.as_ref(), self.deps.fs.as_ref(), folder)
+        {
+            Ok(0) => {}
+            Ok(removed) => {
+                self.log(
+                    LogLevel::Info,
+                    None,
+                    None,
+                    &format!(
+                        "Removed {removed} photos whose files are no longer in {} from view",
+                        folder.display()
+                    ),
+                );
+                self.deps
+                    .events
+                    .emit(&AppEvent::PhotosRemoved(crate::view::PhotosRemoved {
+                        removed,
+                    }));
+            }
+            Err(e) => self.log(
+                LogLevel::Error,
+                None,
+                None,
+                &format!("Cannot remove photos whose files are gone: {e}"),
+            ),
+        }
+    }
+
     fn scan_source(&self, source: &ImportSource) {
         let fs = self.deps.fs.as_ref();
         if let Err(reason) = fs.list_dir(&source.path) {
@@ -856,6 +887,13 @@ impl ImportPipeline {
                 None,
                 &format!("Cannot read folder {}: {reason}", path.display()),
             );
+        }
+        // In place, photos whose files are gone (a wiped memory card) leave
+        // the view; only after the whole folder was read.
+        if let Some(folder) = self.in_place()
+            && report.unreadable.is_empty()
+        {
+            self.prune_missing(&folder);
         }
         let mut queued = 0;
         for photo in &report.photos {
