@@ -235,6 +235,18 @@
     flex-shrink: 0;
   }
 
+  .birdid > button {
+    align-self: flex-start;
+    background: transparent;
+    color: inherit;
+    border: 1px solid #3a3a36;
+    padding: 0.25rem 0.6rem;
+  }
+
+  .birdid > button:hover {
+    background: #22221f;
+  }
+
   .stack {
     display: flex;
     gap: 0.4rem;
