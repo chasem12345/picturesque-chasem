@@ -9,6 +9,11 @@ import type { FinishResult } from "./generated/FinishResult";
 import type { ClearPlan } from "./generated/ClearPlan";
 import type { ClearResult } from "./generated/ClearResult";
 import type { PhotosRemoved } from "./generated/PhotosRemoved";
+import type { BirdIdResult } from "./generated/BirdIdResult";
+import type { BirdRegionView } from "./generated/BirdRegionView";
+import type { BoxView } from "./generated/BoxView";
+import type { PhotoSpeciesView } from "./generated/PhotoSpeciesView";
+import type { SpeciesView } from "./generated/SpeciesView";
 import type { FinishStatus } from "./generated/FinishStatus";
 import type { ModelView } from "./generated/ModelView";
 import type { ExportArgs } from "./generated/ExportArgs";
@@ -105,6 +110,13 @@ export type { FinishResult } from "./generated/FinishResult";
 export type { ClearPlan } from "./generated/ClearPlan";
 export type { ClearResult } from "./generated/ClearResult";
 export type { PhotosRemoved } from "./generated/PhotosRemoved";
+export type { BirdIdResult } from "./generated/BirdIdResult";
+export type { BirdIdSettings } from "./generated/BirdIdSettings";
+export type { BirdRegionView } from "./generated/BirdRegionView";
+export type { BoxView } from "./generated/BoxView";
+export type { PhotoSpeciesView } from "./generated/PhotoSpeciesView";
+export type { SpeciesView } from "./generated/SpeciesView";
+export type { SuggestionView } from "./generated/SuggestionView";
 export type { DeleteAfterImport } from "./generated/DeleteAfterImport";
 export type { OriginalsChoice } from "./generated/OriginalsChoice";
 export type { OriginalsOffer } from "./generated/OriginalsOffer";
@@ -172,6 +184,41 @@ export function clearFolder(): Promise<ClearResult> {
  */
 export function clearView(query: PhotoQuery = {}): Promise<PhotosRemoved> {
   return transport.call<PhotosRemoved>("clear_view", { query });
+}
+
+/** The most likely species of the bird in `box` (shares of the upright
+ * photo) of a photo. */
+export function identifyBird(
+  photoId: number,
+  box: BoxView,
+): Promise<BirdIdResult> {
+  return transport.call<BirdIdResult>("identify_bird", {
+    photo_id: photoId,
+    box,
+  });
+}
+
+/** Keeps (or with `null` forgets) the species chosen for a photo. */
+export function setPhotoSpecies(
+  photoId: number,
+  species: SpeciesView | null,
+): Promise<void> {
+  return transport.call<void>("set_photo_species", {
+    photo_id: photoId,
+    species,
+  });
+}
+
+/** The chosen species of those of the photos that have one. */
+export function photoSpecies(photoIds: number[]): Promise<PhotoSpeciesView[]> {
+  return transport.call<PhotoSpeciesView[]>("photo_species", {
+    photo_ids: photoIds,
+  });
+}
+
+/** Fetches the species list of the region in the settings from eBird. */
+export function refreshBirdRegion(): Promise<BirdRegionView> {
+  return transport.call<BirdRegionView>("refresh_bird_region");
 }
 
 /** What finishing the folder would do. */

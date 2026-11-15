@@ -245,6 +245,53 @@ impl PhotoCatalog for SqliteCatalog {
         Ok(())
     }
 
+    fn set_bird_species(
+        &self,
+        id: PhotoId,
+        species: Option<&picturesque_core::birds::Species>,
+    ) -> Result<(), CatalogError> {
+        let conn = self.conn();
+        match species {
+            Some(s) => conn.execute(
+                "INSERT INTO bird_species (photo_id, common, scientific, code)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT (photo_id) DO UPDATE SET common = excluded.common,
+                     scientific = excluded.scientific, code = excluded.code",
+                params![id.0, s.common, s.scientific, s.code],
+            ),
+            None => conn.execute("DELETE FROM bird_species WHERE photo_id = ?1", [id.0]),
+        }
+        .map_err(storage)?;
+        Ok(())
+    }
+
+    fn bird_species(
+        &self,
+        ids: &[PhotoId],
+    ) -> Result<Vec<(PhotoId, picturesque_core::birds::Species)>, CatalogError> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare_cached("SELECT common, scientific, code FROM bird_species WHERE photo_id = ?1")
+            .map_err(storage)?;
+        let mut found = Vec::new();
+        for id in ids {
+            let species = stmt
+                .query_row([id.0], |row| {
+                    Ok(picturesque_core::birds::Species {
+                        common: row.get(0)?,
+                        scientific: row.get(1)?,
+                        code: row.get(2)?,
+                    })
+                })
+                .optional()
+                .map_err(storage)?;
+            if let Some(s) = species {
+                found.push((*id, s));
+            }
+        }
+        Ok(found)
+    }
+
     fn record_copies(
         &self,
         copies: &[picturesque_app::ports::catalog::CopyRecord],

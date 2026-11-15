@@ -129,6 +129,8 @@ pub struct AppContext {
     pub critic: Arc<dyn crate::ports::critic::Critic>,
     /// Whether the computer runs on battery (the background critic waits).
     pub power: Arc<dyn crate::ports::power::PowerSource>,
+    /// Which bird species live in a region (Bird ID).
+    pub species_lists: Arc<dyn crate::ports::birds::SpeciesLists>,
 }
 
 impl fmt::Debug for AppContext {
@@ -189,6 +191,17 @@ pub struct Api {
     clear: crate::clear::ClearService,
     originals: Arc<crate::originals::OriginalsService>,
     view: crate::view::ViewService,
+    birds: crate::birds::BirdService,
+}
+
+fn bird_error(e: crate::birds::BirdError) -> ApiError {
+    use crate::birds::BirdError;
+    match e {
+        BirdError::NotReady(m) | BirdError::Invalid(m) => {
+            ApiError::new(ApiErrorCode::InvalidArguments, m)
+        }
+        BirdError::Failed(m) => ApiError::internal(m),
+    }
 }
 
 impl fmt::Debug for Api {
@@ -239,7 +252,7 @@ impl Api {
         let analysis = Arc::new(AnalysisService::new(
             Arc::clone(&ctx.catalog),
             Arc::clone(&thumbnails),
-            ctx.pixels,
+            Arc::clone(&ctx.pixels),
             analyzers,
             Arc::clone(&events) as Arc<dyn EventSink>,
         ));
@@ -333,7 +346,17 @@ impl Api {
                 events: Arc::clone(&events) as Arc<dyn EventSink>,
             },
         ));
+        let birds = crate::birds::BirdService::new(crate::birds::BirdDeps {
+            models: Arc::clone(&models),
+            engine: Arc::clone(&ctx.inference),
+            thumbnails: Arc::clone(&thumbnails),
+            pixels: Arc::clone(&ctx.pixels),
+            catalog: Arc::clone(&ctx.catalog),
+            settings: Arc::clone(&ctx.settings_store),
+            lists: Arc::clone(&ctx.species_lists),
+        });
         Ok(Self {
+            birds,
             view: crate::view::ViewService::new(
                 Arc::clone(&ctx.catalog),
                 Arc::clone(&events) as Arc<dyn EventSink>,
@@ -1008,6 +1031,38 @@ impl Api {
                 self.embeddings.invalidate();
                 respond(result)
             }
+            "identify_bird" => {
+                let crate::birds::IdentifyBirdArgs { photo_id, area } = parse_args(command, args)?;
+                self.require_photo(photo_id)?;
+                respond(
+                    self.birds
+                        .identify(PhotoId(photo_id), area)
+                        .map_err(bird_error)?,
+                )
+            }
+            "set_photo_species" => {
+                let crate::birds::SetSpeciesArgs { photo_id, species } = parse_args(command, args)?;
+                self.require_photo(photo_id)?;
+                self.birds
+                    .set_species(PhotoId(photo_id), species)
+                    .map_err(bird_error)?;
+                respond(())
+            }
+            "photo_species" => {
+                let crate::birds::PhotoSpeciesArgs { photo_ids } = parse_args(command, args)?;
+                if photo_ids.len() > 1000 {
+                    return Err(ApiError::new(
+                        ApiErrorCode::InvalidArguments,
+                        "Ask for at most 1000 photos at a time.",
+                    ));
+                }
+                let ids: Vec<PhotoId> = photo_ids.into_iter().map(PhotoId).collect();
+                respond(self.birds.photo_species(&ids).map_err(bird_error)?)
+            }
+            "refresh_bird_region" => {
+                no_args(command, &args)?;
+                respond(self.birds.refresh_region().map_err(bird_error)?)
+            }
             "clear_view" => {
                 let crate::view::ClearViewArgs { query } = if args.is_null() {
                     crate::view::ClearViewArgs::default()
@@ -1305,7 +1360,9 @@ mod tests {
                 "delete_after_copy": "verified",
                 "delete_after_import": "never",
                 "pair_view": "image",
-                "fast_mode": false
+                "fast_mode": false,
+                "bird_id": { "region": "", "ebird_key": "" },
+                "bird_region": { "region": "", "species": [] }
             })
         );
     }

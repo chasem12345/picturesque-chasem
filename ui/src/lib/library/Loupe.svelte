@@ -3,6 +3,8 @@
   import Critique from "./Critique.svelte";
   import SeriesRibbon from "./SeriesRibbon.svelte";
   import UpcomingStacks from "./UpcomingStacks.svelte";
+  import BirdIdPanel from "./BirdIdPanel.svelte";
+  import { BirdNames } from "./birds.svelte";
   import { SeriesStrip, stripPrefs } from "./series-strip.svelte";
   import { entryMember, step, type Entry } from "./stack-nav";
   import {
@@ -12,8 +14,13 @@
     critiquePhoto,
     getCritique,
     getPhoto,
+    identifyBird,
+    photoSpecies,
+    setPhotoSpecies,
+    type BirdIdResult,
     type CriticStatus,
     type DecisionView,
+    type SpeciesView,
     revealInFolder,
     type PairView,
     type PhotoDetail,
@@ -156,6 +163,148 @@
     const at = store.photos.findIndex((p) => p.id === id);
     if (at >= 0) onnavigate(at);
   }
+
+  // ---- Bird ID ----
+  const birdNames = new BirdNames({ photoSpecies, setPhotoSpecies });
+  /** The Bird ID panel is open. */
+  let birdOpen = $state(false);
+  /** Waiting for a box to be drawn on the photo. */
+  let drawing = $state(false);
+  let birdBusy = $state(false);
+  let birdResult = $state<BirdIdResult | null>(null);
+  let birdError = $state<string | null>(null);
+  /** The box asked about, or being drawn: shares of the shown photo. */
+  let birdBox = $state<{ x: number; y: number; w: number; h: number } | null>(
+    null,
+  );
+  let fittedImg: HTMLImageElement | undefined = $state();
+  let stageEl: HTMLDivElement | undefined = $state();
+  /** Where the fitted photo is in the stage, in pixels. */
+  let imgBox = $state<{
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+  } | null>(null);
+  let boxStart: { x: number; y: number } | null = null;
+
+  function measure() {
+    if (!fittedImg || !stageEl) return;
+    const i = fittedImg.getBoundingClientRect();
+    const s = stageEl.getBoundingClientRect();
+    imgBox = {
+      left: i.left - s.left,
+      top: i.top - s.top,
+      width: i.width,
+      height: i.height,
+    };
+  }
+
+  function startDrawing() {
+    zoomed = false;
+    birdOpen = true;
+    drawing = true;
+    birdError = null;
+    birdResult = null;
+    birdBox = null;
+    // After the fitted image is back in place.
+    requestAnimationFrame(measure);
+  }
+
+  function toggleBird() {
+    if (birdOpen) {
+      birdOpen = false;
+      drawing = false;
+    } else startDrawing();
+  }
+
+  // Another photo: what was found was about the previous one.
+  $effect(() => {
+    void photo?.id;
+    birdResult = null;
+    birdError = null;
+    birdBox = null;
+    drawing = birdOpen;
+    if (birdOpen) requestAnimationFrame(measure);
+  });
+
+  /** Position (shares of the photo, 0–1) of a pointer event. */
+  function shareOf(e: PointerEvent) {
+    if (!imgBox || !stageEl) return { x: 0, y: 0 };
+    const s = stageEl.getBoundingClientRect();
+    const clamp = (v: number) => Math.min(1, Math.max(0, v));
+    return {
+      x: clamp((e.clientX - s.left - imgBox.left) / imgBox.width),
+      y: clamp((e.clientY - s.top - imgBox.top) / imgBox.height),
+    };
+  }
+
+  function boxDown(e: PointerEvent) {
+    boxStart = shareOf(e);
+    birdBox = { ...boxStart, w: 0, h: 0 };
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  }
+
+  function boxMove(e: PointerEvent) {
+    if (!boxStart) return;
+    const p = shareOf(e);
+    birdBox = {
+      x: Math.min(boxStart.x, p.x),
+      y: Math.min(boxStart.y, p.y),
+      w: Math.abs(p.x - boxStart.x),
+      h: Math.abs(p.y - boxStart.y),
+    };
+  }
+
+  async function boxUp() {
+    boxStart = null;
+    const box = birdBox;
+    const shown = photo;
+    // A click, not a box.
+    if (!box || box.w < 0.01 || box.h < 0.01 || !shown) {
+      birdBox = null;
+      return;
+    }
+    drawing = false;
+    birdBusy = true;
+    birdError = null;
+    try {
+      const result = await identifyBird(shown.id, {
+        x: box.x,
+        y: box.y,
+        width: box.w,
+        height: box.h,
+      });
+      if (photo?.id === shown.id) birdResult = result;
+    } catch (e) {
+      if (photo?.id === shown.id) birdError = ApiError.from(e).message;
+    } finally {
+      birdBusy = false;
+    }
+  }
+
+  async function useSpecies(species: SpeciesView | null, wholeStack: boolean) {
+    if (!photo) return;
+    const ids = wholeStack ? strip.members.map((p) => p.id) : [photo.id];
+    try {
+      await birdNames.set(ids, species);
+    } catch (e) {
+      birdError = ApiError.from(e).message;
+    }
+  }
+
+  // Names of the shown photo, its stack and the stacks up next.
+  $effect(() => {
+    const ids = strip.members.map((p) => p.id);
+    if (photo) ids.push(photo.id);
+    if (stacked)
+      for (let i = index; i < Math.min(store.total, index + 21); i++) {
+        const p = store.photos[i];
+        if (p) ids.push(p.id);
+      }
+    void birdNames.load(ids);
+  });
+  const species = $derived(photo ? birdNames.of(photo.id) : null);
 
   const UPNEXT_KEY = "picturesque.upNext";
   /** The stacks-up-next pane, shown while stacked. */
@@ -354,7 +503,17 @@
       PageUp: () => go(-1, true),
       n: () => (showUpNext = !showUpNext),
       N: () => (showUpNext = !showUpNext),
-      Escape: () => (zoomed ? (zoomed = false) : onclose()),
+      d: toggleBird,
+      D: toggleBird,
+      Escape: () => {
+        if (drawing) {
+          drawing = false;
+          birdBox = null;
+          if (!birdResult) birdOpen = false;
+        } else if (zoomed) zoomed = false;
+        else if (birdOpen) birdOpen = false;
+        else onclose();
+      },
       z: () => toggleZoom(),
       Z: () => toggleZoom(),
       i: () => (showInfo = !showInfo),
@@ -389,12 +548,18 @@
   data-testid="loupe"
 >
   {#if stacked && showUpNext}
-    <UpcomingStacks {store} {index} onselect={openEntry} />
+    <UpcomingStacks
+      {store}
+      {index}
+      onselect={openEntry}
+      species={(p) => birdNames.of(p.id)?.common ?? null}
+    />
   {/if}
   <div
     class="stage"
     class:has-ribbon={inSeries}
     class:versus={!!rival && !zoomed}
+    bind:this={stageEl}
   >
     {#if entering}
       <p class="loading">Loading…</p>
@@ -432,6 +597,8 @@
             draggable="false"
             onclick={clickFitted}
             onerror={() => (broken = true)}
+            onload={() => birdOpen && measure()}
+            bind:this={fittedImg}
             data-testid="loupe-image"
           />
           {#if broken}
@@ -463,6 +630,50 @@
             .file_name}
         </figcaption>
       </figure>
+    {/if}
+
+    {#if birdOpen && !zoomed && imgBox && (drawing || birdBox)}
+      <div
+        class="boxer"
+        class:drawing
+        style:left="{imgBox.left}px"
+        style:top="{imgBox.top}px"
+        style:width="{imgBox.width}px"
+        style:height="{imgBox.height}px"
+        role="presentation"
+        onpointerdown={drawing ? boxDown : undefined}
+        onpointermove={drawing ? boxMove : undefined}
+        onpointerup={drawing ? () => void boxUp() : undefined}
+        data-testid="bird-id-boxer"
+      >
+        {#if birdBox}
+          <div
+            class="birdbox"
+            style:left="{birdBox.x * 100}%"
+            style:top="{birdBox.y * 100}%"
+            style:width="{birdBox.w * 100}%"
+            style:height="{birdBox.h * 100}%"
+          ></div>
+        {/if}
+      </div>
+    {/if}
+
+    {#if birdOpen}
+      <BirdIdPanel
+        {drawing}
+        busy={birdBusy}
+        result={birdResult}
+        error={birdError}
+        current={species}
+        stackSize={strip.members.length}
+        onuse={(s, whole) => void useSpecies(s, whole)}
+        onforget={() => void useSpecies(null, false)}
+        onredraw={startDrawing}
+        onclose={() => {
+          birdOpen = false;
+          drawing = false;
+        }}
+      />
     {/if}
 
     {#if inSeries && photo}
@@ -504,6 +715,13 @@
       >
       <button onclick={() => (showInfo = !showInfo)} aria-pressed={showInfo}
         ><Icon name="information-circle" /> Info</button
+      >
+      <button
+        onclick={(e) => act(e, toggleBird)}
+        aria-pressed={birdOpen}
+        title="Identify a bird: drag a box around it (D)"
+        data-testid="loupe-bird-id"
+        ><Icon name="viewfinder-circle" /> Bird ID</button
       >
       {#if inSeries}
         <button
@@ -608,6 +826,12 @@
       {#if detail}
         <h2>{photo?.file_name}</h2>
         <dl>
+          {#if species}
+            <dt>Bird</dt>
+            <dd data-testid="loupe-species">
+              {species.common} <em class="muted">{species.scientific}</em>
+            </dd>
+          {/if}
           {#if detail.captured_at}
             <dt>Taken</dt>
             <dd>
@@ -750,8 +974,8 @@
       <p class="keys muted">
         ← → move{stacked
           ? " through each stack · Shift+← → or Page Up/Down skip a stack · N up next"
-          : ""} · P or ↑ pick · X or ↓ reject · U unflag · 0–5 stars · Shift+key decides
-        and moves on · Z zoom · I info{photo && isPair(photo)
+          : ""} · P or ↑ pick · X or ↓ reject · U unflag · 0–5 stars · D bird ID ·
+        Shift+key decides and moves on · Z zoom · I info{photo && isPair(photo)
           ? " · R RAW or JPEG"
           : ""} · Esc close
       </p>
@@ -827,6 +1051,22 @@
   .rival figcaption {
     color: #9a9a94;
     font-size: 0.8rem;
+  }
+
+  .boxer {
+    position: absolute;
+    z-index: 1;
+  }
+
+  .boxer.drawing {
+    cursor: crosshair;
+  }
+
+  .birdbox {
+    position: absolute;
+    border: 2px solid #f2c94c;
+    box-sizing: border-box;
+    pointer-events: none;
   }
 
   .scroller {

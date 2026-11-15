@@ -145,6 +145,28 @@ pub trait PhotoCatalog: Send + Sync {
     /// already gone).
     fn remove_photo(&self, id: PhotoId) -> Result<(), CatalogError>;
 
+    /// Records the bird species the user chose for a photo (Bird ID), or
+    /// forgets it with `None`.
+    fn set_bird_species(
+        &self,
+        id: PhotoId,
+        species: Option<&picturesque_core::birds::Species>,
+    ) -> Result<(), CatalogError> {
+        let _ = (id, species);
+        Err(CatalogError::Storage(
+            "this catalog does not store bird species".into(),
+        ))
+    }
+
+    /// The chosen species of those of `ids` that have one.
+    fn bird_species(
+        &self,
+        ids: &[PhotoId],
+    ) -> Result<Vec<(PhotoId, picturesque_core::birds::Species)>, CatalogError> {
+        let _ = ids;
+        Ok(Vec::new())
+    }
+
     /// Records verified copies, replacing earlier ones of the same files.
     fn record_copies(&self, copies: &[CopyRecord]) -> Result<(), CatalogError>;
 

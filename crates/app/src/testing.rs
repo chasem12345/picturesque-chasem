@@ -438,6 +438,8 @@ pub struct MemoryCatalog {
     pub reject_moves: Mutex<HashMap<PhotoId, i64>>,
     /// Writes of photos and analysis fail as if the disk were full.
     pub full: std::sync::atomic::AtomicBool,
+    /// Bird species chosen with Bird ID.
+    pub species: Mutex<HashMap<PhotoId, picturesque_core::birds::Species>>,
 }
 
 impl MemoryCatalog {
@@ -700,7 +702,32 @@ impl PhotoCatalog for MemoryCatalog {
         Ok(dirty)
     }
 
+    fn set_bird_species(
+        &self,
+        id: PhotoId,
+        species: Option<&picturesque_core::birds::Species>,
+    ) -> Result<(), CatalogError> {
+        let mut stored = self.species.lock().unwrap();
+        match species {
+            Some(s) => stored.insert(id, s.clone()),
+            None => stored.remove(&id),
+        };
+        Ok(())
+    }
+
+    fn bird_species(
+        &self,
+        ids: &[PhotoId],
+    ) -> Result<Vec<(PhotoId, picturesque_core::birds::Species)>, CatalogError> {
+        let stored = self.species.lock().unwrap();
+        Ok(ids
+            .iter()
+            .filter_map(|id| Some((*id, stored.get(id)?.clone())))
+            .collect())
+    }
+
     fn remove_photo(&self, id: PhotoId) -> Result<(), CatalogError> {
+        self.species.lock().unwrap().remove(&id);
         self.photos.lock().unwrap().retain(|p| p.id != id);
         self.decisions.lock().unwrap().remove(&id);
         self.revisions.lock().unwrap().remove(&id);
@@ -1438,6 +1465,7 @@ pub struct TestWorld {
     pub watcher: Arc<FakeWatcher>,
     pub critic: Arc<FakeCritic>,
     pub power: Arc<FakePower>,
+    pub species_lists: Arc<FakeSpeciesLists>,
 }
 
 /// Mains or battery power, as a test sets it.
@@ -1601,6 +1629,7 @@ impl TestWorld {
             watcher: Arc::default(),
             critic: Arc::default(),
             power: Arc::default(),
+            species_lists: Arc::default(),
         }
     }
 
@@ -1641,7 +1670,31 @@ impl TestWorld {
             watcher: self.watcher.clone(),
             critic: self.critic.clone(),
             power: self.power.clone(),
+            species_lists: self.species_lists.clone(),
         }
+    }
+}
+
+/// Species lists a test sets: region → eBird codes; others fail.
+#[derive(Debug, Default)]
+pub struct FakeSpeciesLists {
+    pub regions: Mutex<HashMap<String, Vec<String>>>,
+    /// (region, key) of every request.
+    pub asked: Mutex<Vec<(String, String)>>,
+}
+
+impl crate::ports::birds::SpeciesLists for FakeSpeciesLists {
+    fn species_in_region(&self, region: &str, api_key: &str) -> Result<Vec<String>, String> {
+        self.asked
+            .lock()
+            .unwrap()
+            .push((region.to_owned(), api_key.to_owned()));
+        self.regions
+            .lock()
+            .unwrap()
+            .get(region)
+            .cloned()
+            .ok_or_else(|| format!("eBird does not know the region `{region}`"))
     }
 }
 

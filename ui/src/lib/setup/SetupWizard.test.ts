@@ -33,6 +33,8 @@ const SETTINGS: Settings = {
   delete_after_import: "never",
   pair_view: "image",
   fast_mode: false,
+  bird_id: { region: "", ebird_key: "" },
+  bird_region: { region: "", species: [] },
 };
 
 const getSettings = vi.fn<() => Promise<Settings>>();

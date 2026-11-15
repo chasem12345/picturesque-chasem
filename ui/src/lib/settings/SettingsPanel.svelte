@@ -4,6 +4,7 @@
     ApiError,
     criticStatus,
     getSettings,
+    refreshBirdRegion,
     previewTemplate,
     reanalyzePhotos,
     tasteStatus,
@@ -84,6 +85,39 @@
   let rescanMinutes = $state(5);
   let autoPick = $state(true);
   let fastMode = $state(false);
+  let birdRegion = $state("");
+  let ebirdKey = $state("");
+  const birdChanged = $derived(
+    saved !== null &&
+      (birdRegion.trim().toUpperCase() !== saved.bird_id.region ||
+        ebirdKey.trim() !== saved.bird_id.ebird_key),
+  );
+  let regionBusy = $state(false);
+  let regionNote = $state<string | null>(null);
+  /** The fetched species list applies to the region set now. */
+  const regionListed = $derived(
+    !!saved &&
+      saved.bird_id.region !== "" &&
+      saved.bird_region.region === saved.bird_id.region &&
+      saved.bird_region.species.length > 0,
+  );
+
+  async function fetchRegion() {
+    regionBusy = true;
+    regionNote = null;
+    error = null;
+    try {
+      const r = await refreshBirdRegion();
+      regionNote = `${r.species} species in ${r.region}${
+        r.known > 0 ? `, ${r.known} known to the model` : ""
+      }.`;
+      apply(await getSettings());
+    } catch (e) {
+      error = ApiError.from(e).message;
+    } finally {
+      regionBusy = false;
+    }
+  }
   /** Minimum quality for auto-pick, in percent. */
   let autoPickPercent = $state(50);
   let weights = $state({
@@ -192,6 +226,7 @@
         rescanMinutes !== saved.import.rescan_minutes ||
         autoPickChanged ||
         fastMode !== saved.fast_mode ||
+        birdChanged ||
         provider !== saved.ai.provider),
   );
 
@@ -254,6 +289,8 @@
     autoPick = settings.auto_pick.enabled;
     autoPickPercent = Math.round(settings.auto_pick.min_quality * 100);
     fastMode = settings.fast_mode;
+    birdRegion = settings.bird_id.region;
+    ebirdKey = settings.bird_id.ebird_key;
     weights = { ...settings.ranking };
     provider = settings.ai.provider;
     tastePercent = Math.round(settings.taste.personal_weight * 100);
@@ -314,6 +351,8 @@
       if (rescanMinutes !== saved.import.rescan_minutes)
         update.import = { rescan_minutes: rescanMinutes };
       if (fastMode !== saved.fast_mode) update.fast_mode = fastMode;
+      if (birdChanged)
+        update.bird_id = { region: birdRegion, ebird_key: ebirdKey };
       if (sidecarNaming !== saved.sidecar_naming)
         update.sidecar_naming = sidecarNaming;
       if (
@@ -448,6 +487,55 @@
       that were skipped.
     </p>
   </div>
+
+  <fieldset class="field bird-id" data-testid="bird-id-settings">
+    <legend class="label">Bird ID</legend>
+    <label class="inline">
+      eBird region
+      <input
+        type="text"
+        bind:value={birdRegion}
+        placeholder="US-WA"
+        spellcheck="false"
+        autocapitalize="characters"
+        data-testid="bird-region"
+      />
+    </label>
+    <label class="inline">
+      eBird API key
+      <input
+        type="password"
+        bind:value={ebirdKey}
+        autocomplete="off"
+        data-testid="ebird-key"
+      />
+    </label>
+    <div class="inline">
+      <button
+        onclick={() => void fetchRegion()}
+        disabled={regionBusy || birdChanged || !saved?.bird_id.region}
+        title={birdChanged ? "Save first" : "Ask eBird which species live here"}
+        data-testid="bird-region-fetch"
+        >{regionBusy ? "Asking eBird…" : "Get the region's species"}</button
+      >
+      <span class="muted" data-testid="bird-region-status"
+        >{regionNote ??
+          (regionListed && saved
+            ? `${saved.bird_region.species.length} species in ${saved.bird_region.region}`
+            : "Suggestions come from every bird in the world.")}</span
+      >
+    </div>
+    <p class="hint muted">
+      In the full-screen view, press <kbd>D</kbd> and drag a box around a bird
+      to get the five most likely species. Download the WingCLIP bird identifier
+      under AI models first (non-commercial use only). With a region code such
+      as <code>US</code>, <code>US-WA</code> or
+      <code>US-WA-033</code> (find yours at ebird.org/explore) and a free eBird API
+      key (ebird.org/api/keygen), suggestions are limited to the birds seen there.
+      Getting the list is the only time Bird ID uses the internet; the key is kept
+      on this computer.
+    </p>
+  </fieldset>
 
   <div class="field">
     <label class="label" for="pair-view">RAW+JPEG pairs</label>
@@ -818,10 +906,15 @@
     overflow-wrap: anywhere;
   }
 
-  .series {
+  .series,
+  .bird-id {
     border: none;
     margin: 0;
     padding: 0;
+  }
+
+  .bird-id .inline input {
+    width: 14rem;
   }
 
   .inline {

@@ -54,7 +54,16 @@ export const SHORTCUTS: ShortcutGroup[] = [
   {
     title: "Photo (loupe)",
     items: [
-      { keys: ["←", "→"], action: "Previous or next photo" },
+      {
+        keys: ["←", "→"],
+        action: "Previous or next photo (through each stack when stacked)",
+      },
+      {
+        keys: ["Shift", "←", "→"],
+        action: "Skip a whole stack (also Page Up/Down)",
+      },
+      { keys: ["N"], action: "Show or hide the stacks up next (stacked)" },
+      { keys: ["D"], action: "Bird ID: drag a box around a bird" },
       { keys: ["Z"], action: "Zoom to 100%" },
       { keys: ["I"], action: "Show or hide the photo's details" },
       { keys: ["R"], action: "Switch between the RAW and the JPEG" },

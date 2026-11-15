@@ -129,6 +129,12 @@ In the Library timeline:
   number) on its best photo to stack it again. Stacking works with filters: a stacked series shows its
   best-placed photo among those matching the filters. Whether series are
   stacked is kept for the session.
+- While stacked, the full-screen view steps through every photo of a stack
+  (:kbd:`←` :kbd:`→`) before moving on to the next stack;
+  :kbd:`Shift+←` :kbd:`Shift+→` or :kbd:`Page Up` :kbd:`Page Down` skip a
+  whole stack. Decisions apply to the photo shown. The **Up next** pane
+  (:kbd:`N`) lists the stacks to come, with their sizes, capture times and
+  species (:doc:`bird-id`).
 
 The grid updates by itself whenever series or their best photos change:
 during analysis (at least every five seconds while photos are being

@@ -8,6 +8,7 @@
 pub mod ai;
 pub mod analysis;
 pub mod api;
+pub mod birds;
 pub mod clear;
 pub mod critic;
 pub mod embeddings;

@@ -71,6 +71,46 @@ pub struct Settings {
     /// so there are no quality scores and nothing is auto-picked; turning
     /// it off scores everything that was skipped.
     pub fast_mode: bool,
+    /// Bird ID's region (`docs/features/bird-id.rst`).
+    pub bird_id: BirdIdSettings,
+    /// The species of `bird_id.region`, as eBird listed them when last
+    /// asked; set by `refresh_bird_region`, not by `update_settings`.
+    pub bird_region: BirdRegion,
+}
+
+/// Where Bird ID looks for birds (`docs/features/bird-id.rst`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(default)]
+#[ts(export)]
+pub struct BirdIdSettings {
+    /// eBird region code (`US`, `US-WA`, `US-WA-033`); empty for the
+    /// whole world.
+    pub region: String,
+    /// The user's eBird API key, to fetch the region's species list.
+    pub ebird_key: String,
+}
+
+/// A region's species list as fetched from eBird.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(default)]
+#[ts(export)]
+pub struct BirdRegion {
+    /// The region the list is for.
+    pub region: String,
+    /// eBird species codes.
+    pub species: Vec<String>,
+}
+
+impl Settings {
+    /// The species codes Bird ID limits itself to: the fetched list, when
+    /// it is for the region set now.
+    pub fn region_species(&self) -> Option<&[String]> {
+        let region = self.bird_id.region.trim();
+        (!region.is_empty()
+            && self.bird_region.region.eq_ignore_ascii_case(region)
+            && !self.bird_region.species.is_empty())
+        .then_some(self.bird_region.species.as_slice())
+    }
 }
 
 impl Settings {
@@ -484,6 +524,8 @@ impl Default for Settings {
             delete_after_import: DeleteAfterImport::default(),
             pair_view: PairView::default(),
             fast_mode: false,
+            bird_id: BirdIdSettings::default(),
+            bird_region: BirdRegion::default(),
         }
     }
 }
@@ -525,6 +567,8 @@ pub struct SettingsUpdate {
     pub pair_view: Option<PairView>,
     #[ts(optional)]
     pub fast_mode: Option<bool>,
+    #[ts(optional)]
+    pub bird_id: Option<BirdIdSettings>,
 }
 
 /// Why settings could not be read or changed.
@@ -693,6 +737,24 @@ impl SettingsService {
         }
         if let Some(fast) = update.fast_mode {
             settings.fast_mode = fast;
+        }
+        if let Some(bird_id) = update.bird_id {
+            let region = bird_id.region.trim().to_uppercase();
+            if !region.is_empty()
+                && (region.len() > 32
+                    || !region
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-'))
+            {
+                return Err(SettingsError::Invalid(format!(
+                    "`{}` is not an eBird region code: use one like US, US-WA or US-WA-033.",
+                    bird_id.region.trim()
+                )));
+            }
+            settings.bird_id = BirdIdSettings {
+                region,
+                ebird_key: bird_id.ebird_key.trim().to_owned(),
+            };
         }
         self.store.save_settings(&settings)?;
         Ok(settings)
