@@ -186,6 +186,15 @@ export function clearView(query: PhotoQuery = {}): Promise<PhotosRemoved> {
   return transport.call<PhotosRemoved>("clear_view", { query });
 }
 
+/**
+ * In a folder culled in place: saves decisions to their sidecars, forgets
+ * the folder's photos and reads the folder again, so the view shows what
+ * is in it now. No file is deleted.
+ */
+export function reloadFolder(): Promise<PhotosRemoved> {
+  return transport.call<PhotosRemoved>("reload_folder");
+}
+
 /** The most likely species of the bird in `box` (shares of the upright
  * photo) of a photo. */
 export function identifyBird(

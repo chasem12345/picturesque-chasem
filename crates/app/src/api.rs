@@ -1063,6 +1063,32 @@ impl Api {
                 no_args(command, &args)?;
                 respond(self.birds.refresh_region().map_err(bird_error)?)
             }
+            "reload_folder" => {
+                no_args(command, &args)?;
+                let settings = self.settings.get().map_err(settings_error)?;
+                if settings.open_folder.is_none() {
+                    return Err(ApiError::new(
+                        ApiErrorCode::InvalidArguments,
+                        "Only a folder culled in place can be reloaded.",
+                    ));
+                }
+                // Decisions survive in the sidecars, read again on import.
+                let flushed = self.sidecars.flush();
+                if !flushed.failed.is_empty() {
+                    return Err(ApiError::internal(format!(
+                        "{} decisions could not be saved to their sidecars, so nothing was \
+                         reloaded: {}",
+                        flushed.failed.len(),
+                        flushed.failed[0].1
+                    )));
+                }
+                let removed = self
+                    .view
+                    .clear(&crate::library::PhotoQuery::default())
+                    .map_err(catalog_error)?;
+                self.pipeline.rescan_from_scratch().map_err(catalog_error)?;
+                respond(removed)
+            }
             "clear_view" => {
                 let crate::view::ClearViewArgs { query } = if args.is_null() {
                     crate::view::ClearViewArgs::default()

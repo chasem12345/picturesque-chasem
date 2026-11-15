@@ -84,6 +84,22 @@
   let finishing = $state(false);
   let clearing = $state(false);
   let clearingView = $state(false);
+  let reloading = $state(false);
+
+  /** Reads the open folder again from scratch (Reload folder). */
+  async function reload() {
+    reloading = true;
+    seriesError = null;
+    try {
+      await api.reloadFolder();
+      selection.clear();
+      await store.refresh();
+    } catch (e) {
+      seriesError = api.ApiError.from(e).message;
+    } finally {
+      reloading = false;
+    }
+  }
 
   /** The photos Clear view removes: those in view, or `null` for every
    * photo when nothing filters the view. */
@@ -526,6 +542,15 @@
           Photos in this folder and its subfolders appear here; new ones too, as
           they arrive. Open another folder from the folder menu at the top left.
         </p>
+        <button
+          onclick={() => void reload()}
+          disabled={reloading}
+          data-testid="reload-folder-empty"
+          >{reloading ? "Reloading…" : "Reload folder"}</button
+        >
+        {#if seriesError}
+          <p class="error-text" role="alert">{seriesError}</p>
+        {/if}
       {:else}
         <h2>No photos yet</h2>
         <p class="muted">
@@ -678,14 +703,26 @@
             ?.count ?? 0}
           onmoved={() => void store.refresh()}
         />
-        <button
-          class="small"
-          onclick={() => (clearingView = true)}
-          disabled={store.total === 0}
-          title="Remove the photos in view from Picturesque, without deleting any file"
-          data-testid="open-clear-view"
-          ><Icon name="x-circle" /> Clear view…</button
-        >
+        {#if inFolder}
+          <button
+            class="small"
+            onclick={() => void reload()}
+            disabled={reloading}
+            title="Read the folder again: shows what is on the card now. Picks and ratings are kept in their sidecars; no file is deleted."
+            data-testid="reload-folder"
+            ><Icon name="arrow-path" />
+            {reloading ? "Reloading…" : "Reload folder"}</button
+          >
+        {:else}
+          <button
+            class="small"
+            onclick={() => (clearingView = true)}
+            disabled={store.total === 0}
+            title="Remove the photos in view from Picturesque, without deleting any file"
+            data-testid="open-clear-view"
+            ><Icon name="x-circle" /> Clear view…</button
+          >
+        {/if}
       </div>
       <!-- Status and history stay together at the right, even when the bar wraps. -->
       <div class="trailing">

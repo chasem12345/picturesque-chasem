@@ -526,6 +526,18 @@ impl ImportPipeline {
     }
 
     /// Asks the scanner to scan one source, or all.
+    /// Forgets the photos found so far in every source and scans again, so
+    /// everything still in the folders is found anew (Reload folder).
+    /// Photos waiting or being imported now are not affected.
+    pub fn rescan_from_scratch(&self) -> Result<usize, CatalogError> {
+        let mut forgotten = 0;
+        for source in self.deps.store.sources()? {
+            forgotten += self.deps.store.forget_finished_jobs(source.id)?;
+        }
+        self.request_scan(None);
+        Ok(forgotten)
+    }
+
     pub fn request_scan(&self, id: Option<i64>) {
         let mut shared = self.shared.lock().expect("pipeline lock");
         shared.scan_requests.insert(id);
@@ -1223,6 +1235,23 @@ impl ImportPipeline {
             return fail(reason.clone());
         }
 
+        // In place and in fast mode, files are identified by a quick
+        // fingerprint rather than read in full from a slow card; nothing is
+        // copied, and copies made later are verified with full hashes.
+        let quick = self.in_place().is_some()
+            && self
+                .deps
+                .settings
+                .load_settings()
+                .is_ok_and(|s| s.fast_mode);
+        let identify = |path: &Path| {
+            if quick {
+                self.deps.fs.fingerprint(path)
+            } else {
+                self.deps.fs.hash_file(path)
+            }
+        };
+
         // 2. Duplicate check: hash media files whose size is already
         //    catalogued.
         let sizes = {
@@ -1237,7 +1266,7 @@ impl ImportPipeline {
             .iter_mut()
             .filter(|f| f.format.role() != AssetRole::Sidecar && sizes.contains(&f.size))
         {
-            match self.deps.fs.hash_file(&file.source) {
+            match identify(&file.source) {
                 Ok((hash, _)) => {
                     file.hash = Some(hash);
                     match self.deps.catalog.photo_with_media_hash(&hash) {
@@ -1275,7 +1304,7 @@ impl ImportPipeline {
                 };
                 let hash = match file.hash {
                     Some(hash) => hash,
-                    None => match self.deps.fs.hash_file(&file.source) {
+                    None => match identify(&file.source) {
                         Ok((hash, _)) => hash,
                         Err(e) => {
                             return fail(format!("cannot read {}: {e}", file_name(&file.source)));

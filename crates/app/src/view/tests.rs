@@ -122,6 +122,44 @@ fn clearing_the_view_removes_only_the_photos_in_view() {
 }
 
 #[test]
+fn reloading_works_only_in_a_folder_and_saves_decisions_first() {
+    let (world, [first, ..]) = world();
+    world
+        .catalog
+        .set_decision(
+            first,
+            Decision {
+                flag: Flag::Pick,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let api = Api::new(world.context()).unwrap();
+
+    let result = api.call("reload_folder", Value::Null).unwrap();
+
+    assert_eq!(result, json!({ "removed": 3 }));
+    assert!(ids(&world).is_empty());
+    assert_eq!(files(&world), 4);
+    // The pick reached its sidecar before the photo left the catalog.
+    let written = world.sidecars.0.lock().unwrap();
+    assert!(
+        written
+            .iter()
+            .any(|(path, d)| path.to_string_lossy().contains("IMG_1") && d.flag == Flag::Pick),
+        "{written:?}"
+    );
+    drop(written);
+
+    // In the library, nothing is reloaded.
+    let mut settings = world.settings.load_settings().unwrap();
+    settings.open_folder = None;
+    world.settings.save_settings(&settings).unwrap();
+    let err = api.call("reload_folder", Value::Null).unwrap_err();
+    assert!(err.message.contains("Only a folder"), "{}", err.message);
+}
+
+#[test]
 fn clearing_an_empty_view_says_nothing() {
     let (world, _) = world();
     let view = ViewService::new(world.catalog.clone(), world.events.clone());

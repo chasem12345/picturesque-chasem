@@ -829,6 +829,72 @@ fn in_place_photos_of_a_wiped_card_leave_the_view_and_new_ones_arrive() {
 }
 
 #[test]
+fn in_place_fast_mode_fingerprints_files_instead_of_reading_them_in_full() {
+    let world = in_place_world();
+    // Larger than the fake fingerprint's ends.
+    world.fs.write(
+        Path::new("/shoot/IMG_1.CR3"),
+        b"a large raw, longer than its ends",
+    );
+    let mut settings = world.settings.load_settings().unwrap();
+    settings.fast_mode = true;
+    world.settings.save_settings(&settings).unwrap();
+    let p = world.pipeline();
+    p.add_source(Path::new("/shoot"), true).unwrap();
+    scan_all(&p);
+
+    assert_eq!(p.run_until_idle(), 2);
+
+    assert!(
+        world
+            .fs
+            .fingerprints
+            .load(std::sync::atomic::Ordering::Relaxed)
+            >= 3
+    );
+    let raw = world
+        .catalog
+        .all_photos()
+        .unwrap()
+        .into_iter()
+        .find_map(|p| p.assets.raw().cloned())
+        .unwrap();
+    assert_eq!(
+        raw.hash,
+        world
+            .fs
+            .fingerprint(Path::new("/shoot/IMG_1.CR3"))
+            .unwrap()
+            .0
+    );
+    assert_ne!(
+        raw.hash,
+        crate::testing::fake_hash(b"a large raw, longer than its ends")
+    );
+}
+
+#[test]
+fn reloading_a_folder_finds_its_photos_again() {
+    let world = in_place_world();
+    let p = world.pipeline();
+    p.add_source(Path::new("/shoot"), true).unwrap();
+    scan_all(&p);
+    assert_eq!(p.run_until_idle(), 2);
+    // Cleared from view: unchanged files are not found again by a scan...
+    for photo in world.catalog.all_photos().unwrap() {
+        world.catalog.remove_photo(photo.id).unwrap();
+    }
+    scan_all(&p);
+    assert_eq!(p.run_until_idle(), 0);
+
+    // ...until the folder is reloaded from scratch.
+    assert_eq!(p.rescan_from_scratch().unwrap(), 2);
+    scan_all(&p);
+    assert_eq!(p.run_until_idle(), 2);
+    assert_eq!(world.catalog.all_photos().unwrap().len(), 2);
+}
+
+#[test]
 fn in_place_a_card_taken_out_keeps_its_photos_in_view() {
     let world = in_place_world();
     let p = world.pipeline();

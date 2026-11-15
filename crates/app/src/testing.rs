@@ -56,6 +56,8 @@ struct State {
 #[derive(Default)]
 pub struct MemFs {
     state: Mutex<State>,
+    /// How many files were fingerprinted.
+    pub fingerprints: std::sync::atomic::AtomicUsize,
 }
 
 impl MemFs {
@@ -284,6 +286,22 @@ impl FileSystem for MemFs {
     fn hash_file(&self, path: &Path) -> Result<(ContentHash, u64), String> {
         let bytes = self.read(path).ok_or("it does not exist")?;
         Ok((fake_hash(&bytes), bytes.len() as u64))
+    }
+
+    /// Like the real one, with 4-byte "mebibytes": files up to 8 bytes
+    /// get their full hash, larger ones a fingerprint of both ends.
+    fn fingerprint(&self, path: &Path) -> Result<(ContentHash, u64), String> {
+        let bytes = self.read(path).ok_or("it does not exist")?;
+        self.fingerprints
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if bytes.len() <= 8 {
+            return Ok((fake_hash(&bytes), bytes.len() as u64));
+        }
+        let mut sample = b"fingerprint".to_vec();
+        sample.extend((bytes.len() as u64).to_le_bytes());
+        sample.extend(&bytes[..4]);
+        sample.extend(&bytes[bytes.len() - 4..]);
+        Ok((fake_hash(&sample), bytes.len() as u64))
     }
 
     fn create_dir_all(&self, path: &Path) -> Result<(), String> {
@@ -1792,6 +1810,14 @@ impl crate::ports::pipeline::PipelineStore for MemoryPipelineStore {
             }
         }
         Ok(())
+    }
+
+    fn forget_finished_jobs(&self, source_id: i64) -> Result<usize, CatalogError> {
+        let mut s = self.state.lock().unwrap();
+        let before = s.jobs.len();
+        s.jobs
+            .retain(|(_, j)| j.source_id != Some(source_id) || !j.stage.is_final());
+        Ok(before - s.jobs.len())
     }
 
     fn record_scan(&self, id: i64, error: Option<&str>) -> Result<(), CatalogError> {
